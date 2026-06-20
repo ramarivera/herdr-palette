@@ -2,7 +2,7 @@
 # Cross-reference: README.md and https://github.com/ramarivera/herdr-palette
 id = "ramarivera.palette"
 name = "Herdr Palette"
-version = "0.1.0"
+version = "0.1.1"
 min_herdr_version = "0.7.0"
 description = "A Raycast/Linear-style fuzzy command palette for Herdr."
 platforms = ["linux", "macos"]
@@ -21,6 +21,6 @@ command = ["herdr", "plugin", "pane", "open", "--plugin", "ramarivera.palette", 
 id = "overlay"
 title = "Palette"
 placement = "overlay"
-# Herdr 0.7 resolves pane commands through PATH rather than relative to
-# plugin_root, so use the linked checkout's release binary directly.
-command = ["/Users/ramarivera/dev/herdr-palette/target/release/herdr-palette"]
+# Herdr resolves pane commands through PATH. The toolbox installs this binary
+# through the pinned cargo:herdr-palette mise tool before linking the manifest.
+command = ["herdr-palette"]
