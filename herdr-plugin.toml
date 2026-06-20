@@ -21,4 +21,6 @@ command = ["herdr", "plugin", "pane", "open", "--plugin", "ramarivera.palette", 
 id = "overlay"
 title = "Palette"
 placement = "overlay"
-command = ["target/release/herdr-palette"]
+# Herdr 0.7 resolves pane commands through PATH rather than relative to
+# plugin_root, so use the linked checkout's release binary directly.
+command = ["/Users/ramarivera/dev/herdr-palette/target/release/herdr-palette"]

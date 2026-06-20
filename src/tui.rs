@@ -221,6 +221,7 @@ fn draw(f: &mut Frame<'_>, state: &mut PaletteState, palette: Palette) {
         .constraints([
             Constraint::Length(3), // prompt
             Constraint::Min(1),    // list
+            Constraint::Length(1), // breathing room between results and footer/help
             Constraint::Length(1), // footer
         ])
         .split(overlay);
@@ -267,6 +268,12 @@ fn draw(f: &mut Frame<'_>, state: &mut PaletteState, palette: Palette) {
         .highlight_symbol("▶ ");
     f.render_stateful_widget(list, chunks[1], &mut state.list_state);
 
+    // Breathing room between the last result row and the footer/help line.
+    f.render_widget(
+        Paragraph::new(Line::default()).style(Style::default().bg(palette.panel)),
+        chunks[2],
+    );
+
     // Footer.
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -278,7 +285,7 @@ fn draw(f: &mut Frame<'_>, state: &mut PaletteState, palette: Palette) {
         ),
     ]))
     .style(Style::default().bg(palette.panel).fg(palette.muted));
-    f.render_widget(footer, chunks[2]);
+    f.render_widget(footer, chunks[3]);
 }
 
 fn render_row(item: &Item, palette: Palette) -> ListItem<'_> {
