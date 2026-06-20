@@ -53,11 +53,36 @@ struct Args {
     /// diagnose which sources are/aren't contributing rows.
     #[arg(long)]
     debug_kinds: bool,
+
+    /// Print every occupied key chord and the action it's bound to (across all
+    /// sources), then exit. The authoritative occupied set — use it to find a
+    /// free chord instead of guessing from `herdr --default-config`, which is
+    /// an incomplete reference.
+    #[arg(long)]
+    debug_keys: bool,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
     let data = source::collect(args.config)?;
+
+    if args.debug_keys {
+        use std::collections::BTreeMap;
+        let mut by_key: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+        for it in &data.items {
+            if it.keys.is_empty() {
+                continue;
+            }
+            for k in &it.keys {
+                by_key.entry(k.clone()).or_default().push(it.title.as_str());
+            }
+        }
+        println!("occupied chords ({}):", by_key.len());
+        for (k, titles) in &by_key {
+            println!("  {k:<22} → {}", titles.join(", "));
+        }
+        return Ok(());
+    }
 
     if args.debug_kinds {
         use std::collections::BTreeMap;
