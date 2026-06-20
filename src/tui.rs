@@ -8,11 +8,10 @@
 
 use crate::items::{Item, ItemKind};
 use anyhow::Result;
+use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use herdr_pretty_which::theme::Palette;
@@ -32,8 +31,10 @@ pub enum Outcome {
     Cancelled,
 }
 
-/// Run the palette overlay over the live terminal. Restores raw mode + alt
-/// screen on return, including on error paths.
+/// Run the palette overlay in-place over the live terminal. Restores raw mode
+/// and cursor visibility on return, including on error paths. This deliberately
+/// avoids the alternate screen so the terminal around the centered overlay stays
+/// visible while the palette is open.
 pub fn run(
     items: Vec<Item>,
     palette: Palette,
@@ -138,8 +139,8 @@ fn run_loop(state: &mut PaletteState, palette: Palette) -> Result<Outcome> {
     let backend = CrosstermBackend::new(stdout);
     enable_raw_mode()?;
     let _raw_guard = RawModeGuard;
-    execute!(&mut io::stdout(), EnterAlternateScreen)?;
-    let _alt_guard = AltScreenGuard;
+    execute!(&mut io::stdout(), Hide)?;
+    let _cursor_guard = CursorGuard;
 
     let mut terminal = Terminal::new(backend)?;
     loop {
@@ -200,20 +201,25 @@ impl Drop for RawModeGuard {
     }
 }
 
-/// Leaves the alternate screen on drop for the same reason.
-struct AltScreenGuard;
-impl Drop for AltScreenGuard {
+/// Restores cursor visibility and moves below the overlay-ish area so the next
+/// shell prompt does not overwrite the palette border mid-screen. The drawn
+/// overlay remains in scrollback intentionally; avoiding alternate screen means
+/// there is no safe way to restore the exact covered terminal cells.
+struct CursorGuard;
+impl Drop for CursorGuard {
     fn drop(&mut self) {
         let mut stdout = io::stdout();
-        let _ = execute!(stdout, LeaveAlternateScreen);
+        let bottom = size().map(|(_, rows)| rows.saturating_sub(1)).unwrap_or(0);
+        let _ = execute!(stdout, Show, MoveTo(0, bottom));
+        println!();
     }
 }
 
 fn draw(f: &mut Frame<'_>, state: &mut PaletteState, palette: Palette) {
     let area = f.area();
-    f.render_widget(Clear, area);
 
     let (overlay, _) = centered_rect(area, 80, 60);
+    f.render_widget(Clear, overlay);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
