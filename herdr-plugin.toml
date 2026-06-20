@@ -1,0 +1,24 @@
+# Herdr plugin manifest for Herdr Palette. Requires Herdr >= 0.7.0 plugin support.
+# Cross-reference: README.md and https://github.com/ramarivera/herdr-palette
+id = "ramarivera.palette"
+name = "Herdr Palette"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "A Raycast/Linear-style fuzzy command palette for Herdr."
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["cargo", "build", "--release"]
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open"
+title = "Open palette"
+contexts = ["workspace", "tab", "pane", "global"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "ramarivera.palette", "--entrypoint", "overlay", "--placement", "overlay", "--focus"]
+
+[[panes]]
+id = "overlay"
+title = "Palette"
+placement = "overlay"
+command = ["target/release/herdr-palette"]
