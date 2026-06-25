@@ -112,7 +112,13 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    match tui::run(data.items, data.palette, &header, &args.query, &data.config_path)? {
+    match tui::run(
+        data.items,
+        data.palette,
+        &header,
+        &args.query,
+        &data.config_path,
+    )? {
         tui::Outcome::Selected(item) => {
             if let Some(d) = item.dispatch.as_ref() {
                 dispatch::run(d)?;

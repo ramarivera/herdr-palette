@@ -26,32 +26,49 @@ pub fn dispatch_for_action(action: &str) -> Option<Dispatch> {
     let d = match action {
         // --- Workspaces ---
         "new_workspace" => Cli(vec_into(&["herdr", "workspace", "create", "--focus"])),
-        "new_worktree" => Cli(vec_into(&["herdr", "worktree", "create"])),
-        "rename_workspace" => Cli(vec_into(&["herdr", "workspace", "rename"])), // needs id+label; prompt-based
-        "close_workspace" => Cli(vec_into(&["herdr", "workspace", "close"])), // needs id
+        "new_worktree" => Cli(vec_into(&["herdr", "worktree", "create", "--focus"])),
         "previous_workspace" => PrevWorkspace,
         "next_workspace" => NextWorkspace,
 
         // --- Tabs ---
         "new_tab" => Cli(vec_into(&["herdr", "tab", "create", "--focus"])),
-        "rename_tab" => Cli(vec_into(&["herdr", "tab", "rename"])),
-        "close_tab" => Cli(vec_into(&["herdr", "tab", "close"])),
         "previous_tab" => PrevTab,
         "next_tab" => NextTab,
 
         // --- Panes / agents ---
-        "split_vertical" => Cli(vec_into(&["herdr", "pane", "split", "right"])),
-        "split_horizontal" => Cli(vec_into(&["herdr", "pane", "split", "down"])),
-        "close_pane" => Cli(vec_into(&["herdr", "pane", "close"])),
-        "zoom" => Cli(vec_into(&["herdr", "pane", "zoom"])),
-        "fullscreen" => Cli(vec_into(&["herdr", "pane", "fullscreen"])),
-        "cycle_pane_next" => Cli(vec_into(&["herdr", "pane", "focus", "next"])),
-        "cycle_pane_previous" => Cli(vec_into(&["herdr", "pane", "focus", "previous"])),
-        "focus_pane_left" => Cli(vec_into(&["herdr", "pane", "focus", "left"])),
-        "focus_pane_down" => Cli(vec_into(&["herdr", "pane", "focus", "down"])),
-        "focus_pane_up" => Cli(vec_into(&["herdr", "pane", "focus", "up"])),
-        "focus_pane_right" => Cli(vec_into(&["herdr", "pane", "focus", "right"])),
-        "rename_pane" => Cli(vec_into(&["herdr", "agent", "rename"])),
+        "split_vertical" => Cli(vec_into(&[
+            "herdr",
+            "pane",
+            "split",
+            "--direction",
+            "right",
+            "--focus",
+        ])),
+        "split_horizontal" => Cli(vec_into(&[
+            "herdr",
+            "pane",
+            "split",
+            "--direction",
+            "down",
+            "--focus",
+        ])),
+        "zoom" | "fullscreen" => Cli(vec_into(&[
+            "herdr",
+            "pane",
+            "zoom",
+            "--current",
+            "--toggle",
+        ])),
+        "focus_pane_left" => Cli(vec_into(&["herdr", "pane", "focus", "--direction", "left"])),
+        "focus_pane_down" => Cli(vec_into(&["herdr", "pane", "focus", "--direction", "down"])),
+        "focus_pane_up" => Cli(vec_into(&["herdr", "pane", "focus", "--direction", "up"])),
+        "focus_pane_right" => Cli(vec_into(&[
+            "herdr",
+            "pane",
+            "focus",
+            "--direction",
+            "right",
+        ])),
         "previous_agent" => PrevAgent,
         "next_agent" => NextAgent,
 
@@ -176,12 +193,15 @@ pub fn list_entries(kind: &str) -> Result<Vec<(String, String)>> {
 /// `herdr status --json`-style current-id probe. Falls back to first id if the
 /// current entity can't be determined.
 fn current_id(kind: &str) -> Result<String> {
-    let entries = list_entries(kind)?;
-    let _ = kind; // status shape varies; fall through to list[0]
-    entries
-        .first()
-        .map(|(id, _)| id.clone())
-        .context("no ids available to determine current")
+    let out = Command::new(herdr_bin()?).args([kind, "list"]).output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "herdr {kind} list failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    extract_focused_id(&text, kind).context("could not determine focused id from list output")
 }
 
 /// Extract ordered (id, label) entries from a herdr JSON list envelope.
@@ -189,25 +209,9 @@ fn current_id(kind: &str) -> Result<String> {
 /// Label is `label` (workspaces/tabs); for agents we synthesize
 /// `<agent> · <cwd basename>` since agents have no `label` field.
 fn extract_entries(text: &str, kind: &str) -> Result<Vec<(String, String)>> {
-    let plural = match kind {
-        "workspace" => "workspaces",
-        "tab" => "tabs",
-        "agent" => "agents",
-        other => other,
-    };
-    let id_field = match kind {
-        "workspace" => "workspace_id",
-        "tab" => "tab_id",
-        "agent" => "terminal_id",
-        _ => "id",
-    };
+    let id_field = id_field_for_kind(kind);
     let v: serde_json::Value = serde_json::from_str(text).context("list output was not JSON")?;
-    let arr = v
-        .get("result")
-        .and_then(|r| r.get(plural))
-        .and_then(|w| w.as_array())
-        .or_else(|| v.as_array())
-        .context("list output had no array")?;
+    let arr = list_array_for_kind(&v, kind).context("list output had no array")?;
     let mut out = Vec::with_capacity(arr.len());
     for entry in arr {
         let id = entry
@@ -216,11 +220,19 @@ fn extract_entries(text: &str, kind: &str) -> Result<Vec<(String, String)>> {
             .map(str::to_string);
         let label = match kind {
             "agent" => {
-                let agent = entry.get("agent").and_then(|s| s.as_str()).unwrap_or("agent");
+                let agent = entry
+                    .get("agent")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("agent");
                 let cwd = entry
                     .get("cwd")
                     .and_then(|s| s.as_str())
-                    .map(|c| std::path::Path::new(c).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| c.to_string()))
+                    .map(|c| {
+                        std::path::Path::new(c)
+                            .file_name()
+                            .map(|f| f.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| c.to_string())
+                    })
                     .unwrap_or_default();
                 format!("{agent} · {cwd}")
             }
@@ -237,6 +249,46 @@ fn extract_entries(text: &str, kind: &str) -> Result<Vec<(String, String)>> {
     Ok(out)
 }
 
+fn extract_focused_id(text: &str, kind: &str) -> Result<String> {
+    let id_field = id_field_for_kind(kind);
+    let v: serde_json::Value = serde_json::from_str(text).context("list output was not JSON")?;
+    let arr = list_array_for_kind(&v, kind).context("list output had no array")?;
+    let fallback = arr
+        .iter()
+        .find_map(|entry| entry.get(id_field).and_then(|id| id.as_str()));
+    arr.iter()
+        .find(|entry| entry.get("focused").and_then(|focused| focused.as_bool()) == Some(true))
+        .and_then(|entry| entry.get(id_field).and_then(|id| id.as_str()))
+        .or(fallback)
+        .map(str::to_string)
+        .context("list output had no id")
+}
+
+fn list_array_for_kind<'a>(
+    v: &'a serde_json::Value,
+    kind: &str,
+) -> Option<&'a Vec<serde_json::Value>> {
+    let plural = match kind {
+        "workspace" => "workspaces",
+        "tab" => "tabs",
+        "agent" => "agents",
+        other => other,
+    };
+    v.get("result")
+        .and_then(|r| r.get(plural))
+        .and_then(|w| w.as_array())
+        .or_else(|| v.as_array())
+}
+
+fn id_field_for_kind(kind: &str) -> &'static str {
+    match kind {
+        "workspace" => "workspace_id",
+        "tab" => "tab_id",
+        "agent" => "terminal_id",
+        _ => "id",
+    }
+}
+
 /// Run an argv, resolving `argv[0] == "herdr"` to the real binary path. String
 /// slices are promoted to owned for the child.
 fn run_argv(argv: &[&str]) -> Result<()> {
@@ -244,9 +296,7 @@ fn run_argv(argv: &[&str]) -> Result<()> {
     if owned.first().is_some_and(|first| first == "herdr") {
         owned[0] = herdr_bin()?;
     }
-    let (cmd, args) = owned
-        .split_first()
-        .context("empty argv")?;
+    let (cmd, args) = owned.split_first().context("empty argv")?;
     Command::new(cmd).args(args).spawn()?.wait()?;
     Ok(())
 }
@@ -260,26 +310,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dispatchable_actions_map_to_cli() {
+    fn dispatchable_actions_map_to_herdr_0_7_cli() {
         assert!(matches!(
             dispatch_for_action("new_workspace"),
             Some(Dispatch::Cli(_))
         ));
         assert!(matches!(
             dispatch_for_action("split_vertical"),
-            Some(Dispatch::Cli(_))
+            Some(Dispatch::Cli(ref argv)) if argv == &vec_into(&["herdr", "pane", "split", "--direction", "right", "--focus"])
+        ));
+        assert!(matches!(
+            dispatch_for_action("split_horizontal"),
+            Some(Dispatch::Cli(ref argv)) if argv == &vec_into(&["herdr", "pane", "split", "--direction", "down", "--focus"])
         ));
         assert!(matches!(
             dispatch_for_action("focus_pane_left"),
-            Some(Dispatch::Cli(_))
+            Some(Dispatch::Cli(ref argv)) if argv == &vec_into(&["herdr", "pane", "focus", "--direction", "left"])
+        ));
+        assert!(matches!(
+            dispatch_for_action("zoom"),
+            Some(Dispatch::Cli(ref argv)) if argv == &vec_into(&["herdr", "pane", "zoom", "--current", "--toggle"])
         ));
     }
 
     #[test]
+    fn id_or_prompt_required_actions_are_reference_only() {
+        for action in [
+            "rename_workspace",
+            "close_workspace",
+            "rename_tab",
+            "close_tab",
+            "rename_pane",
+            "close_pane",
+            "cycle_pane_next",
+            "cycle_pane_previous",
+        ] {
+            assert!(
+                dispatch_for_action(action).is_none(),
+                "{action} should stay reference-only until palette can supply the required target/prompt"
+            );
+        }
+    }
+
+    #[test]
     fn prev_next_map_to_neighbor_dispatch() {
-        assert!(matches!(dispatch_for_action("next_workspace"), Some(Dispatch::NextWorkspace)));
-        assert!(matches!(dispatch_for_action("previous_tab"), Some(Dispatch::PrevTab)));
-        assert!(matches!(dispatch_for_action("next_agent"), Some(Dispatch::NextAgent)));
+        assert!(matches!(
+            dispatch_for_action("next_workspace"),
+            Some(Dispatch::NextWorkspace)
+        ));
+        assert!(matches!(
+            dispatch_for_action("previous_tab"),
+            Some(Dispatch::PrevTab)
+        ));
+        assert!(matches!(
+            dispatch_for_action("next_agent"),
+            Some(Dispatch::NextAgent)
+        ));
     }
 
     #[test]
@@ -303,12 +389,27 @@ mod tests {
     }
 
     #[test]
+    fn extract_focused_id_uses_focused_field_before_fallback() {
+        let ws = r#"{"result":{"workspaces":[{"workspace_id":"w1","label":"one","focused":false},{"workspace_id":"w2","label":"two","focused":true}]}}"#;
+        assert_eq!(extract_focused_id(ws, "workspace").unwrap(), "w2");
+
+        let agents = r#"{"result":{"agents":[{"terminal_id":"term_1","focused":false},{"terminal_id":"term_2","focused":true}]}}"#;
+        assert_eq!(extract_focused_id(agents, "agent").unwrap(), "term_2");
+    }
+
+    #[test]
     fn extract_entries_maps_kind_specific_id_fields() {
         let ws = r#"{"result":{"workspaces":[{"workspace_id":"w1","label":"toolbox"}]}}"#;
-        assert_eq!(extract_entries(ws, "workspace").unwrap(), vec![("w1".into(), "toolbox".into())]);
+        assert_eq!(
+            extract_entries(ws, "workspace").unwrap(),
+            vec![("w1".into(), "toolbox".into())]
+        );
 
         let tabs = r#"{"result":{"tabs":[{"tab_id":"w1:t1","label":"logs"}]}}"#;
-        assert_eq!(extract_entries(tabs, "tab").unwrap(), vec![("w1:t1".into(), "logs".into())]);
+        assert_eq!(
+            extract_entries(tabs, "tab").unwrap(),
+            vec![("w1:t1".into(), "logs".into())]
+        );
     }
 
     #[test]
@@ -323,6 +424,9 @@ mod tests {
     #[test]
     fn extract_entries_falls_back_to_flat_array() {
         let flat = r#"[{"workspace_id":"w1","label":"a"}]"#;
-        assert_eq!(extract_entries(flat, "workspace").unwrap(), vec![("w1".into(), "a".into())]);
+        assert_eq!(
+            extract_entries(flat, "workspace").unwrap(),
+            vec![("w1".into(), "a".into())]
+        );
     }
 }

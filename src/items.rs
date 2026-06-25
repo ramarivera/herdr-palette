@@ -83,6 +83,12 @@ pub struct Item {
     pub subtitle: String,
     /// Keybinding display chips, e.g. `["prefix+n"]`. Empty for non-keybindings.
     pub keys: Vec<String>,
+    /// Mnemonic path used by tree mode. Built-in keybindings reuse Pretty Which
+    /// paths; non-keybinding rows get synthetic palette paths.
+    pub tree_path: Vec<String>,
+    /// Original Pretty Which binding when this row came from a keybinding.
+    /// Kept so search scoring can reuse the shared key-aware matcher.
+    pub binding: Option<Binding>,
     /// When `None`, the item is reference-only and renders greyed.
     pub dispatch: Option<Dispatch>,
 }
@@ -120,6 +126,8 @@ pub fn item_from_binding(binding: &Binding) -> Item {
         title: binding.label.clone(),
         subtitle: binding.hint.clone(),
         keys: binding.keys.clone(),
+        tree_path: binding.tree_path.clone(),
+        binding: Some(binding.clone()),
         dispatch,
     }
 }
@@ -151,6 +159,8 @@ pub fn item_from_command(cmd: &CommandBinding) -> Item {
         title: name,
         subtitle,
         keys,
+        tree_path: vec!["Custom".to_string(), "Commands".to_string()],
+        binding: None,
         dispatch,
     }
 }
@@ -177,6 +187,8 @@ pub fn item_from_plugin_action(
         title: label,
         subtitle: qualified,
         keys: Vec::new(),
+        tree_path: vec!["Plugins".to_string(), plugin_id.to_string()],
+        binding: None,
         dispatch: Some(Dispatch::Cli(command.to_vec())),
     }
 }
@@ -190,11 +202,19 @@ pub fn item_from_jump(kind: ItemKind, title: &str, id: &str) -> Item {
         ItemKind::JumpAgent => Some(Dispatch::FocusAgent(id.to_string())),
         _ => None,
     };
+    let tree_path = match kind {
+        ItemKind::JumpWorkspace => vec!["Jump".to_string(), "Workspaces".to_string()],
+        ItemKind::JumpTab => vec!["Jump".to_string(), "Tabs".to_string()],
+        ItemKind::JumpAgent => vec!["Jump".to_string(), "Agents".to_string()],
+        _ => vec![kind.category_label().to_string()],
+    };
     Item {
         kind,
         title: title.to_string(),
         subtitle: id.to_string(),
         keys: Vec::new(),
+        tree_path,
+        binding: None,
         dispatch,
     }
 }
@@ -252,7 +272,12 @@ mod tests {
 
     #[test]
     fn shell_command_is_reference_only_in_v1() {
-        let item = item_from_command(&cmd("lazygit", "prefix+alt+g", Some("pane"), Some("lazygit")));
+        let item = item_from_command(&cmd(
+            "lazygit",
+            "prefix+alt+g",
+            Some("pane"),
+            Some("lazygit"),
+        ));
         assert!(item.dispatch.is_none());
         assert!(!item.is_dispatchable());
     }
@@ -264,6 +289,8 @@ mod tests {
             title: "Split vertical".into(),
             subtitle: "Split side by side.".into(),
             keys: vec!["prefix+v".into()],
+            tree_path: vec!["Panes".into(), "Layout".into()],
+            binding: None,
             dispatch: None,
         };
         let h = item.haystack();
