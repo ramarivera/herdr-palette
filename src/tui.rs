@@ -24,7 +24,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
 use std::collections::BTreeSet;
+use std::env;
 use std::io::{self, BufRead, BufReader};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -100,6 +102,7 @@ enum InputMode {
 struct ShellPanel {
     input: String,
     command: Option<String>,
+    shell_label: String,
     lines: Vec<ShellLine>,
     rx: Option<Receiver<ShellEvent>>,
     running: bool,
@@ -130,6 +133,7 @@ impl ShellPanel {
         Self {
             input: String::new(),
             command: None,
+            shell_label: login_shell_command_spec().label,
             lines: Vec::new(),
             rx: None,
             running: false,
@@ -155,16 +159,17 @@ impl ShellPanel {
         }
 
         let (tx, rx) = mpsc::channel();
+        let shell = login_shell_command_spec();
         self.command = Some(command.clone());
+        self.shell_label = shell.label.clone();
         self.lines.clear();
         self.rx = Some(rx);
         self.running = true;
         self.input.clear();
 
         thread::spawn(move || {
-            let mut child = match Command::new("bash")
-                .arg("-lc")
-                .arg(&command)
+            let mut child = match Command::new(&shell.program)
+                .args(shell.args_for(&command))
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -251,6 +256,63 @@ impl ShellPanel {
             self.rx = Some(rx);
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ShellCommandSpec {
+    program: String,
+    label: String,
+    style: ShellCommandStyle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellCommandStyle {
+    DashLoginCommand,
+    LongLoginCommand,
+    PowerShellLoginCommand,
+}
+
+impl ShellCommandSpec {
+    fn args_for(&self, command: &str) -> Vec<String> {
+        match self.style {
+            ShellCommandStyle::DashLoginCommand => vec!["-lc".into(), command.into()],
+            ShellCommandStyle::LongLoginCommand => {
+                vec!["--login".into(), "-c".into(), command.into()]
+            }
+            ShellCommandStyle::PowerShellLoginCommand => {
+                vec!["-Login".into(), "-Command".into(), command.into()]
+            }
+        }
+    }
+}
+
+fn login_shell_command_spec() -> ShellCommandSpec {
+    shell_command_spec_for(env::var("SHELL").unwrap_or_else(|_| "bash".into()))
+}
+
+fn shell_command_spec_for(program: impl Into<String>) -> ShellCommandSpec {
+    let program = program.into();
+    let label = shell_label(&program);
+    let style = match label.as_str() {
+        "nu" | "nushell" | "fish" => ShellCommandStyle::LongLoginCommand,
+        "pwsh" | "powershell" => ShellCommandStyle::PowerShellLoginCommand,
+        _ => ShellCommandStyle::DashLoginCommand,
+    };
+
+    ShellCommandSpec {
+        program,
+        label,
+        style,
+    }
+}
+
+fn shell_label(program: &str) -> String {
+    Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program)
+        .trim_start_matches('-')
+        .to_string()
 }
 
 impl PaletteState {
@@ -826,7 +888,10 @@ fn shell_prompt(state: &PaletteState, palette: Palette) -> Paragraph<'static> {
     let status = if state.shell.running { " running" } else { "" };
     Paragraph::new(Line::from(vec![
         Span::styled("Shell ", Style::default().fg(palette.warning)),
-        Span::styled("bash", Style::default().fg(palette.accent_2)),
+        Span::styled(
+            state.shell.shell_label.clone(),
+            Style::default().fg(palette.accent_2),
+        ),
         Span::styled(status, Style::default().fg(palette.muted)),
         Span::raw("   "),
         Span::styled("! ", Style::default().fg(palette.warning)),
@@ -1249,10 +1314,33 @@ mod tests {
         )
         .unwrap();
 
-        assert!(out.contains("Shell bash"));
+        assert!(out.contains("Shell "));
         assert!(out.contains("command printf hello"));
         assert!(out.contains("────"));
         assert!(out.contains("hello"));
         assert!(out.contains("exit 0"));
+    }
+
+    #[test]
+    fn shell_command_spec_uses_nushell_login_command_mode() {
+        let spec = shell_command_spec_for("/opt/homebrew/bin/nu");
+
+        assert_eq!(spec.program, "/opt/homebrew/bin/nu");
+        assert_eq!(spec.label, "nu");
+        assert_eq!(
+            spec.args_for("pwd"),
+            vec!["--login".to_string(), "-c".to_string(), "pwd".to_string()]
+        );
+    }
+
+    #[test]
+    fn shell_command_spec_uses_dash_lc_for_posix_shells() {
+        let spec = shell_command_spec_for("/bin/zsh");
+
+        assert_eq!(spec.label, "zsh");
+        assert_eq!(
+            spec.args_for("pwd"),
+            vec!["-lc".to_string(), "pwd".to_string()]
+        );
     }
 }
