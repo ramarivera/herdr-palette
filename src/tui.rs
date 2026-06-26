@@ -24,7 +24,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
 use std::collections::BTreeSet;
-use std::io::{self};
+use std::io::{self, BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 
 /// Outcome of one interactive run.
 pub enum Outcome {
@@ -59,6 +62,8 @@ struct PaletteState {
     navigation_view: NavigationViewMode,
     collapsed_tree_paths: BTreeSet<String>,
     selected: usize,
+    input_mode: InputMode,
+    shell: ShellPanel,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +91,168 @@ struct TreeRow {
     score: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputMode {
+    Palette,
+    Shell,
+}
+
+struct ShellPanel {
+    input: String,
+    command: Option<String>,
+    lines: Vec<ShellLine>,
+    rx: Option<Receiver<ShellEvent>>,
+    running: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ShellLine {
+    stream: ShellStream,
+    text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellStream {
+    Stdout,
+    Stderr,
+    Status,
+}
+
+#[derive(Debug)]
+enum ShellEvent {
+    Line(ShellLine),
+    Exit(i32),
+    SpawnError(String),
+}
+
+impl ShellPanel {
+    fn new() -> Self {
+        Self {
+            input: String::new(),
+            command: None,
+            lines: Vec::new(),
+            rx: None,
+            running: false,
+        }
+    }
+
+    fn enter(&mut self) {
+        self.input.clear();
+    }
+
+    fn clear(&mut self) {
+        self.input.clear();
+        self.command = None;
+        self.lines.clear();
+        self.rx = None;
+        self.running = false;
+    }
+
+    fn start(&mut self) {
+        let command = self.input.trim().to_string();
+        if command.is_empty() || self.running {
+            return;
+        }
+
+        let (tx, rx) = mpsc::channel();
+        self.command = Some(command.clone());
+        self.lines.clear();
+        self.rx = Some(rx);
+        self.running = true;
+        self.input.clear();
+
+        thread::spawn(move || {
+            let mut child = match Command::new("bash")
+                .arg("-lc")
+                .arg(&command)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(err) => {
+                    let _ = tx.send(ShellEvent::SpawnError(err.to_string()));
+                    return;
+                }
+            };
+
+            if let Some(stdout) = child.stdout.take() {
+                let tx = tx.clone();
+                thread::spawn(move || {
+                    for line in BufReader::new(stdout).lines() {
+                        let text = line.unwrap_or_else(|err| format!("read stdout failed: {err}"));
+                        if tx
+                            .send(ShellEvent::Line(ShellLine {
+                                stream: ShellStream::Stdout,
+                                text,
+                            }))
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+            }
+
+            if let Some(stderr) = child.stderr.take() {
+                let tx = tx.clone();
+                thread::spawn(move || {
+                    for line in BufReader::new(stderr).lines() {
+                        let text = line.unwrap_or_else(|err| format!("read stderr failed: {err}"));
+                        if tx
+                            .send(ShellEvent::Line(ShellLine {
+                                stream: ShellStream::Stderr,
+                                text,
+                            }))
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+            }
+
+            let code = child
+                .wait()
+                .ok()
+                .and_then(|status| status.code())
+                .unwrap_or(1);
+            let _ = tx.send(ShellEvent::Exit(code));
+        });
+    }
+
+    fn drain_events(&mut self) {
+        let Some(rx) = self.rx.take() else {
+            return;
+        };
+        let mut keep_rx = true;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                ShellEvent::Line(line) => self.lines.push(line),
+                ShellEvent::Exit(code) => {
+                    self.lines.push(ShellLine {
+                        stream: ShellStream::Status,
+                        text: format!("exit {code}"),
+                    });
+                    self.running = false;
+                    keep_rx = false;
+                }
+                ShellEvent::SpawnError(message) => {
+                    self.lines.push(ShellLine {
+                        stream: ShellStream::Status,
+                        text: format!("spawn failed: {message}"),
+                    });
+                    self.running = false;
+                    keep_rx = false;
+                }
+            }
+        }
+        if keep_rx {
+            self.rx = Some(rx);
+        }
+    }
+}
+
 impl PaletteState {
     fn new(items: Vec<Item>, header: String, initial_query: &str) -> Self {
         let matcher = SkimMatcherV2::default().ignore_case();
@@ -100,6 +267,8 @@ impl PaletteState {
             navigation_view: NavigationViewMode::Tree,
             collapsed_tree_paths: BTreeSet::new(),
             selected: 0,
+            input_mode: InputMode::Palette,
+            shell: ShellPanel::new(),
         };
         s.recompute_matches();
         s
@@ -400,6 +569,21 @@ impl PaletteState {
             self.selected = index;
         }
     }
+
+    fn enter_shell_mode(&mut self) {
+        self.input_mode = InputMode::Shell;
+        self.shell.enter();
+    }
+
+    fn leave_shell_mode(&mut self) {
+        if !self.shell.running {
+            self.input_mode = InputMode::Palette;
+        }
+    }
+
+    fn drain_shell_events(&mut self) {
+        self.shell.drain_events();
+    }
 }
 
 fn sort_flat_matches(hits: &mut [MatchedItem]) {
@@ -460,12 +644,35 @@ fn run_loop(state: &mut PaletteState, palette: Palette) -> Result<Outcome> {
 
     let mut terminal = Terminal::new(backend)?;
     loop {
+        state.drain_shell_events();
         terminal.draw(|f| draw(f, state, palette))?;
         if !event::poll(std::time::Duration::from_millis(250))? {
             continue;
         }
         if let Event::Key(key) = event::read()? {
             if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            if state.input_mode == InputMode::Shell {
+                match (key.code, key.modifiers) {
+                    (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                        state.leave_shell_mode();
+                    }
+                    (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+                        return Ok(Outcome::Cancelled);
+                    }
+                    (KeyCode::Enter, _) => state.shell.start(),
+                    (KeyCode::Char('u'), KeyModifiers::CONTROL) => state.shell.clear(),
+                    (KeyCode::Backspace, _) if !state.shell.running => {
+                        state.shell.input.pop();
+                    }
+                    (KeyCode::Char(ch), mods)
+                        if !state.shell.running && !mods.contains(KeyModifiers::CONTROL) =>
+                    {
+                        state.shell.input.push(ch);
+                    }
+                    _ => {}
+                }
                 continue;
             }
             match (key.code, key.modifiers) {
@@ -502,6 +709,7 @@ fn run_loop(state: &mut PaletteState, palette: Palette) -> Result<Outcome> {
                     state.query.clear();
                     state.recompute_matches();
                 }
+                (KeyCode::Char('!'), _) => state.enter_shell_mode(),
                 (KeyCode::Backspace, _) => {
                     state.query.pop();
                     state.recompute_matches();
@@ -562,8 +770,42 @@ fn draw(f: &mut Frame<'_>, state: &mut PaletteState, palette: Palette) {
         .style(Style::default().bg(palette.panel).fg(palette.text));
     f.render_widget(block, overlay);
 
-    // Prompt line.
-    let prompt = Paragraph::new(Line::from(vec![
+    let prompt = match state.input_mode {
+        InputMode::Palette => palette_prompt(state, palette),
+        InputMode::Shell => shell_prompt(state, palette),
+    };
+    f.render_widget(prompt, chunks[0]);
+
+    match state.input_mode {
+        InputMode::Palette => render_palette_rows(f, chunks[1], state, palette),
+        InputMode::Shell => render_shell_output(f, chunks[1], state, palette),
+    }
+
+    // Breathing room between the last result row and the footer/help line.
+    f.render_widget(
+        Paragraph::new(Line::default()).style(Style::default().bg(palette.panel)),
+        chunks[2],
+    );
+
+    let footer_text = match state.input_mode {
+        InputMode::Palette => format!(
+            "Enter run · ! shell · Ctrl-t view · ←/→ tree · ↑↓/Ctrl-n-p select · Esc cancel · Ctrl-u clear · {}",
+            state.config_path
+        ),
+        InputMode::Shell => {
+            "Enter run shell · Esc palette · Ctrl-u clear · Ctrl-d cancel".to_string()
+        }
+    };
+    let footer = Paragraph::new(Line::from(vec![Span::styled(
+        footer_text,
+        Style::default().fg(palette.muted),
+    )]))
+    .style(Style::default().bg(palette.panel).fg(palette.muted));
+    f.render_widget(footer, chunks[3]);
+}
+
+fn palette_prompt(state: &PaletteState, palette: Palette) -> Paragraph<'static> {
+    Paragraph::new(Line::from(vec![
         Span::styled("View ", Style::default().fg(palette.muted)),
         Span::styled(
             state.navigation_view.label(),
@@ -573,13 +815,28 @@ fn draw(f: &mut Frame<'_>, state: &mut PaletteState, palette: Palette) {
         ),
         Span::raw("   "),
         Span::styled("> ", Style::default().fg(palette.accent)),
-        Span::styled(state.query.as_str(), Style::default().fg(palette.text)),
+        Span::styled(state.query.clone(), Style::default().fg(palette.text)),
         Span::styled("▏", Style::default().fg(palette.muted)),
     ]))
-    .style(Style::default().bg(palette.panel));
-    f.render_widget(prompt, chunks[0]);
+    .style(Style::default().bg(palette.panel))
+}
 
-    // List/tree rows.
+fn shell_prompt(state: &PaletteState, palette: Palette) -> Paragraph<'static> {
+    let cursor = if state.shell.running { "" } else { "▏" };
+    let status = if state.shell.running { " running" } else { "" };
+    Paragraph::new(Line::from(vec![
+        Span::styled("Shell ", Style::default().fg(palette.warning)),
+        Span::styled("bash", Style::default().fg(palette.accent_2)),
+        Span::styled(status, Style::default().fg(palette.muted)),
+        Span::raw("   "),
+        Span::styled("! ", Style::default().fg(palette.warning)),
+        Span::styled(state.shell.input.clone(), Style::default().fg(palette.text)),
+        Span::styled(cursor, Style::default().fg(palette.muted)),
+    ]))
+    .style(Style::default().bg(palette.panel))
+}
+
+fn render_palette_rows(f: &mut Frame<'_>, area: Rect, state: &mut PaletteState, palette: Palette) {
     let rows = match state.navigation_view {
         NavigationViewMode::List => state
             .matched
@@ -603,24 +860,38 @@ fn draw(f: &mut Frame<'_>, state: &mut PaletteState, palette: Palette) {
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▶ ");
-    f.render_stateful_widget(list, chunks[1], &mut state.list_state);
+    f.render_stateful_widget(list, area, &mut state.list_state);
+}
 
-    // Breathing room between the last result row and the footer/help line.
-    f.render_widget(
-        Paragraph::new(Line::default()).style(Style::default().bg(palette.panel)),
-        chunks[2],
-    );
+fn render_shell_output(f: &mut Frame<'_>, area: Rect, state: &PaletteState, palette: Palette) {
+    let mut rows = Vec::new();
+    if let Some(command) = state.shell.command.as_ref() {
+        rows.push(ListItem::new(Line::from(vec![
+            Span::styled("command ", Style::default().fg(palette.muted)),
+            Span::styled(command.clone(), Style::default().fg(palette.text)),
+        ])));
+        rows.push(ListItem::new(Line::from(Span::styled(
+            "─".repeat(area.width as usize),
+            Style::default().fg(palette.muted),
+        ))));
+    } else {
+        rows.push(ListItem::new(Line::from(Span::styled(
+            "Type a bash command and press Enter.",
+            Style::default().fg(palette.muted),
+        ))));
+    }
 
-    // Footer.
-    let footer = Paragraph::new(Line::from(vec![Span::styled(
-        format!(
-            "Enter run · Ctrl-t view · ←/→ tree · ↑↓/Ctrl-n-p select · Esc cancel · Ctrl-u clear · {}",
-            state.config_path
-        ),
-        Style::default().fg(palette.muted),
-    )]))
-    .style(Style::default().bg(palette.panel).fg(palette.muted));
-    f.render_widget(footer, chunks[3]);
+    rows.extend(state.shell.lines.iter().map(|line| {
+        let style = match line.stream {
+            ShellStream::Stdout => Style::default().fg(palette.text),
+            ShellStream::Stderr => Style::default().fg(palette.danger),
+            ShellStream::Status => Style::default().fg(palette.muted),
+        };
+        ListItem::new(Line::from(Span::styled(line.text.clone(), style)))
+    }));
+
+    let list = List::new(rows).style(Style::default().bg(palette.panel));
+    f.render_widget(list, area);
 }
 
 fn render_tree_row(row: &TreeRow, palette: Palette) -> ListItem<'static> {
@@ -752,6 +1023,29 @@ pub fn render_snapshot(
     // Reflow the highlight to row 0 for deterministic snapshots when no query
     // chooses a best match.
     state.sync_list_selection();
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend)?;
+    terminal.draw(|f| draw(f, &mut state, palette))?;
+    let buffer = terminal.backend().buffer().clone();
+    Ok(render_buffer(&buffer, width, height))
+}
+
+#[cfg(test)]
+fn render_shell_snapshot(
+    palette: Palette,
+    header: &str,
+    command: &str,
+    lines: Vec<ShellLine>,
+    running: bool,
+    width: u16,
+    height: u16,
+) -> Result<String> {
+    use ratatui::backend::TestBackend;
+    let mut state = PaletteState::new(Vec::new(), header.to_string(), "");
+    state.input_mode = InputMode::Shell;
+    state.shell.command = (!command.is_empty()).then(|| command.to_string());
+    state.shell.lines = lines;
+    state.shell.running = running;
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend)?;
     terminal.draw(|f| draw(f, &mut state, palette))?;
@@ -900,5 +1194,65 @@ mod tests {
         let out = render_snapshot(sample_items(), p, "Palette", "", 90, 16).unwrap();
         assert!(out.contains("Palette"));
         assert!(out.contains("Split vertical"));
+    }
+
+    #[test]
+    fn shell_mode_can_be_entered_and_left_when_idle() {
+        let mut s = PaletteState::new(sample_items(), "Palette".into(), "");
+        assert_eq!(s.input_mode, InputMode::Palette);
+
+        s.enter_shell_mode();
+        assert_eq!(s.input_mode, InputMode::Shell);
+
+        s.leave_shell_mode();
+        assert_eq!(s.input_mode, InputMode::Palette);
+    }
+
+    #[test]
+    fn shell_clear_removes_input_command_and_output() {
+        let mut shell = ShellPanel::new();
+        shell.input = "echo nope".into();
+        shell.command = Some("echo old".into());
+        shell.lines.push(ShellLine {
+            stream: ShellStream::Stdout,
+            text: "old".into(),
+        });
+
+        shell.clear();
+
+        assert!(shell.input.is_empty());
+        assert_eq!(shell.command, None);
+        assert!(shell.lines.is_empty());
+        assert!(!shell.running);
+    }
+
+    #[test]
+    fn shell_snapshot_renders_command_separator_output_and_status() {
+        let p = sample_palette();
+        let out = render_shell_snapshot(
+            p,
+            "Palette",
+            "printf hello",
+            vec![
+                ShellLine {
+                    stream: ShellStream::Stdout,
+                    text: "hello".into(),
+                },
+                ShellLine {
+                    stream: ShellStream::Status,
+                    text: "exit 0".into(),
+                },
+            ],
+            false,
+            90,
+            20,
+        )
+        .unwrap();
+
+        assert!(out.contains("Shell bash"));
+        assert!(out.contains("command printf hello"));
+        assert!(out.contains("────"));
+        assert!(out.contains("hello"));
+        assert!(out.contains("exit 0"));
     }
 }
