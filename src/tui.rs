@@ -47,9 +47,13 @@ pub fn run(
     header: &str,
     initial_query: &str,
     config_path: &str,
+    start_shell: bool,
 ) -> Result<Outcome> {
     let mut state = PaletteState::new(items, header.to_string(), initial_query);
     state.config_path = config_path.to_string();
+    if start_shell {
+        state.enter_shell_mode();
+    }
     run_loop(&mut state, palette)
 }
 
@@ -808,16 +812,15 @@ fn draw(f: &mut Frame<'_>, state: &mut PaletteState, palette: Palette) {
     let area = f.area();
     f.render_widget(Clear, area);
 
-    let (overlay, _) = centered_rect(area, 80, 60);
+    let overlay = overlay_rect(area, state);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(3), // prompt
-            Constraint::Min(1),    // list/tree
-            Constraint::Length(1), // breathing room between results and footer/help
-            Constraint::Length(1), // footer
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
         ])
         .split(overlay);
 
@@ -843,12 +846,6 @@ fn draw(f: &mut Frame<'_>, state: &mut PaletteState, palette: Palette) {
         InputMode::Shell => render_shell_output(f, chunks[1], state, palette),
     }
 
-    // Breathing room between the last result row and the footer/help line.
-    f.render_widget(
-        Paragraph::new(Line::default()).style(Style::default().bg(palette.panel)),
-        chunks[2],
-    );
-
     let footer_text = match state.input_mode {
         InputMode::Palette => format!(
             "Enter run · ! shell · Ctrl-t view · ←/→ tree · ↑↓/Ctrl-n-p select · Esc cancel · Ctrl-u clear · {}",
@@ -863,7 +860,7 @@ fn draw(f: &mut Frame<'_>, state: &mut PaletteState, palette: Palette) {
         Style::default().fg(palette.muted),
     )]))
     .style(Style::default().bg(palette.panel).fg(palette.muted));
-    f.render_widget(footer, chunks[3]);
+    f.render_widget(footer, chunks[2]);
 }
 
 fn palette_prompt(state: &PaletteState, palette: Palette) -> Paragraph<'static> {
@@ -929,34 +926,53 @@ fn render_palette_rows(f: &mut Frame<'_>, area: Rect, state: &mut PaletteState, 
 }
 
 fn render_shell_output(f: &mut Frame<'_>, area: Rect, state: &PaletteState, palette: Palette) {
-    let mut rows = Vec::new();
+    let mut header_rows = Vec::new();
     if let Some(command) = state.shell.command.as_ref() {
-        rows.push(ListItem::new(Line::from(vec![
+        header_rows.push(ListItem::new(Line::from(vec![
             Span::styled("command ", Style::default().fg(palette.muted)),
             Span::styled(command.clone(), Style::default().fg(palette.text)),
         ])));
-        rows.push(ListItem::new(Line::from(Span::styled(
+        header_rows.push(ListItem::new(Line::from(Span::styled(
             "─".repeat(area.width as usize),
             Style::default().fg(palette.muted),
         ))));
     } else {
-        rows.push(ListItem::new(Line::from(Span::styled(
-            "Type a bash command and press Enter.",
+        header_rows.push(ListItem::new(Line::from(Span::styled(
+            "Type a shell command and press Enter.",
             Style::default().fg(palette.muted),
         ))));
     }
 
-    rows.extend(state.shell.lines.iter().map(|line| {
-        let style = match line.stream {
-            ShellStream::Stdout => Style::default().fg(palette.text),
-            ShellStream::Stderr => Style::default().fg(palette.danger),
-            ShellStream::Status => Style::default().fg(palette.muted),
-        };
+    let max_rows = area.height as usize;
+    let header_len = header_rows.len();
+    let output_capacity = max_rows.saturating_sub(header_len);
+    let omitted = state.shell.lines.len().saturating_sub(output_capacity);
+    let mut rows = header_rows;
+
+    if omitted > 0 && output_capacity > 0 {
+        rows.push(ListItem::new(Line::from(Span::styled(
+            format!("… {omitted} earlier lines"),
+            Style::default().fg(palette.muted),
+        ))));
+    }
+
+    let output_capacity = max_rows.saturating_sub(rows.len());
+    let start = state.shell.lines.len().saturating_sub(output_capacity);
+    rows.extend(state.shell.lines.iter().skip(start).map(|line| {
+        let style = shell_line_style(line.stream, palette);
         ListItem::new(Line::from(Span::styled(line.text.clone(), style)))
     }));
 
     let list = List::new(rows).style(Style::default().bg(palette.panel));
     f.render_widget(list, area);
+}
+
+fn shell_line_style(stream: ShellStream, palette: Palette) -> Style {
+    match stream {
+        ShellStream::Stdout => Style::default().fg(palette.text),
+        ShellStream::Stderr => Style::default().fg(palette.danger),
+        ShellStream::Status => Style::default().fg(palette.muted),
+    }
 }
 
 fn render_tree_row(row: &TreeRow, palette: Palette) -> ListItem<'static> {
@@ -1054,13 +1070,38 @@ fn accent_for_kind(kind: ItemKind, palette: Palette) -> ratatui::style::Color {
 }
 
 /// Center a rect of relative width/height percent inside `area`.
-fn centered_rect(area: Rect, width_pct: u16, height_pct: u16) -> (Rect, Rect) {
+fn overlay_rect(area: Rect, state: &PaletteState) -> Rect {
+    match state.input_mode {
+        InputMode::Palette => centered_rect(area, 80, palette_overlay_height(area)),
+        InputMode::Shell => centered_rect(area, 78, shell_overlay_height(area, state)),
+    }
+}
+
+fn palette_overlay_height(area: Rect) -> u16 {
+    ((area.height as f32 * 0.60).round() as u16).clamp(12, area.height.saturating_sub(2).max(1))
+}
+
+fn shell_overlay_height(area: Rect, state: &PaletteState) -> u16 {
+    let command_rows = if state.shell.command.is_some() { 2 } else { 1 };
+    let content_rows = command_rows + state.shell.lines.len() as u16;
+    let desired = content_rows + 4; // border, margin, prompt, and footer chrome.
+    let min_height = 7;
+    let max_height = ((area.height as f32 * 0.52).round() as u16).clamp(min_height, 18);
+    desired.clamp(
+        min_height,
+        max_height.min(area.height.saturating_sub(2).max(1)),
+    )
+}
+
+fn centered_rect(area: Rect, width_pct: u16, height: u16) -> Rect {
+    let height = height.min(area.height);
+    let top = area.height.saturating_sub(height) / 2;
     let pop = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage((100 - height_pct) / 2),
-            Constraint::Percentage(height_pct),
-            Constraint::Percentage((100 - height_pct) / 2),
+            Constraint::Length(top),
+            Constraint::Length(height),
+            Constraint::Min(0),
         ])
         .split(area)[1];
     let mid = Layout::default()
@@ -1071,7 +1112,7 @@ fn centered_rect(area: Rect, width_pct: u16, height_pct: u16) -> (Rect, Rect) {
             Constraint::Percentage((100 - width_pct) / 2),
         ])
         .split(pop)[1];
-    (mid, area)
+    mid
 }
 
 /// Render the palette to a string for snapshot tests (non-interactive).
@@ -1319,6 +1360,50 @@ mod tests {
         assert!(out.contains("────"));
         assert!(out.contains("hello"));
         assert!(out.contains("exit 0"));
+    }
+
+    #[test]
+    fn shell_overlay_starts_compact_and_grows_with_output() {
+        let area = Rect::new(0, 0, 100, 40);
+        let mut s = PaletteState::new(sample_items(), "Palette".into(), "");
+        s.enter_shell_mode();
+
+        assert_eq!(shell_overlay_height(area, &s), 7);
+
+        s.shell.command = Some("seq 20".into());
+        s.shell.lines = (1..=10)
+            .map(|n| ShellLine {
+                stream: ShellStream::Stdout,
+                text: n.to_string(),
+            })
+            .collect();
+
+        assert_eq!(shell_overlay_height(area, &s), 16);
+
+        s.shell.lines = (1..=50)
+            .map(|n| ShellLine {
+                stream: ShellStream::Stdout,
+                text: n.to_string(),
+            })
+            .collect();
+
+        assert_eq!(shell_overlay_height(area, &s), 18);
+    }
+
+    #[test]
+    fn shell_snapshot_marks_omitted_output_when_capped() {
+        let p = sample_palette();
+        let lines = (1..=30)
+            .map(|n| ShellLine {
+                stream: ShellStream::Stdout,
+                text: format!("line {n}"),
+            })
+            .collect();
+        let out = render_shell_snapshot(p, "Palette", "seq 30", lines, false, 90, 20).unwrap();
+
+        assert!(out.contains("…"));
+        assert!(out.contains("earlier lines"));
+        assert!(out.contains("line 30"));
     }
 
     #[test]

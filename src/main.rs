@@ -41,6 +41,10 @@ struct Args {
     #[arg(long, default_value = "")]
     query: String,
 
+    /// Start the interactive overlay directly in shell mode.
+    #[arg(long)]
+    shell: bool,
+
     /// Snapshot width.
     #[arg(long, default_value_t = 100)]
     width: u16,
@@ -118,6 +122,7 @@ fn main() -> Result<()> {
         &header,
         &args.query,
         &data.config_path,
+        args.shell,
     )? {
         tui::Outcome::Selected(item) => {
             if let Some(d) = item.dispatch.as_ref() {
