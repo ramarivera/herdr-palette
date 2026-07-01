@@ -15,10 +15,10 @@
 //! Reference-only rows (keybinding actions with no v1 dispatch path) render
 //! greyed and ignore Enter.
 
-mod dispatch;
-mod items;
-mod source;
-mod tui;
+pub mod dispatch;
+pub mod items;
+pub mod source;
+pub mod tui;
 
 use anyhow::Result;
 use clap::Parser;
@@ -123,10 +123,11 @@ fn main() -> Result<()> {
         &args.query,
         &data.config_path,
         args.shell,
+        &data.cwd,
     )? {
         tui::Outcome::Selected(item) => {
             if let Some(d) = item.dispatch.as_ref() {
-                dispatch::run(d)?;
+                dispatch::run(d, &data.cwd)?;
             }
         }
         tui::Outcome::Cancelled => {}

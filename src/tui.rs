@@ -26,7 +26,7 @@ use ratatui::{Frame, Terminal};
 use std::collections::BTreeSet;
 use std::env;
 use std::io::{self, BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -48,8 +48,9 @@ pub fn run(
     initial_query: &str,
     config_path: &str,
     start_shell: bool,
+    cwd: &Path,
 ) -> Result<Outcome> {
-    let mut state = PaletteState::new(items, header.to_string(), initial_query);
+    let mut state = PaletteState::new(items, header.to_string(), initial_query, cwd);
     state.config_path = config_path.to_string();
     if start_shell {
         state.enter_shell_mode();
@@ -110,6 +111,7 @@ struct ShellPanel {
     lines: Vec<ShellLine>,
     rx: Option<Receiver<ShellEvent>>,
     running: bool,
+    cwd: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,7 +135,7 @@ enum ShellEvent {
 }
 
 impl ShellPanel {
-    fn new() -> Self {
+    fn new(cwd: PathBuf) -> Self {
         Self {
             input: String::new(),
             command: None,
@@ -141,6 +143,7 @@ impl ShellPanel {
             lines: Vec::new(),
             rx: None,
             running: false,
+            cwd,
         }
     }
 
@@ -171,9 +174,11 @@ impl ShellPanel {
         self.running = true;
         self.input.clear();
 
+        let cwd = self.cwd.clone();
         thread::spawn(move || {
             let mut child = match Command::new(&shell.program)
                 .args(shell.args_for(&command))
+                .current_dir(&cwd)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -324,7 +329,7 @@ fn shell_label(program: &str) -> String {
 }
 
 impl PaletteState {
-    fn new(items: Vec<Item>, header: String, initial_query: &str) -> Self {
+    fn new(items: Vec<Item>, header: String, initial_query: &str, cwd: &Path) -> Self {
         let matcher = SkimMatcherV2::default().ignore_case();
         let mut s = Self {
             all: items,
@@ -338,7 +343,7 @@ impl PaletteState {
             collapsed_tree_paths: BTreeSet::new(),
             selected: 0,
             input_mode: InputMode::Palette,
-            shell: ShellPanel::new(),
+            shell: ShellPanel::new(cwd.to_path_buf()),
         };
         s.recompute_matches();
         s
@@ -1107,15 +1112,15 @@ fn centered_rect(area: Rect, width_pct: u16, height: u16) -> Rect {
             Constraint::Min(0),
         ])
         .split(area)[1];
-    let mid = Layout::default()
+    
+    Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage((100 - width_pct) / 2),
             Constraint::Percentage(width_pct),
             Constraint::Percentage((100 - width_pct) / 2),
         ])
-        .split(pop)[1];
-    mid
+        .split(pop)[1]
 }
 
 /// Render the palette to a string for snapshot tests (non-interactive).
@@ -1128,7 +1133,8 @@ pub fn render_snapshot(
     height: u16,
 ) -> Result<String> {
     use ratatui::backend::TestBackend;
-    let mut state = PaletteState::new(items, header.to_string(), query);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+    let mut state = PaletteState::new(items, header.to_string(), query, &cwd);
     // Reflow the highlight to row 0 for deterministic snapshots when no query
     // chooses a best match.
     state.sync_list_selection();
@@ -1150,7 +1156,8 @@ fn render_shell_snapshot(
     height: u16,
 ) -> Result<String> {
     use ratatui::backend::TestBackend;
-    let mut state = PaletteState::new(Vec::new(), header.to_string(), "");
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+    let mut state = PaletteState::new(Vec::new(), header.to_string(), "", &cwd);
     state.input_mode = InputMode::Shell;
     state.shell.command = (!command.is_empty()).then(|| command.to_string());
     state.shell.lines = lines;
@@ -1198,6 +1205,10 @@ mod tests {
         }
     }
 
+    fn sample_cwd() -> std::path::PathBuf {
+        std::env::temp_dir()
+    }
+
     fn sample_items() -> Vec<Item> {
         vec![
             Item {
@@ -1238,7 +1249,7 @@ mod tests {
 
     #[test]
     fn empty_query_matches_everything() {
-        let mut s = PaletteState::new(sample_items(), "Palette".into(), "");
+        let mut s = PaletteState::new(sample_items(), "Palette".into(), "", &sample_cwd());
         assert_eq!(s.matched.len(), 3);
         s.query = "split".into();
         s.recompute_matches();
@@ -1248,7 +1259,7 @@ mod tests {
 
     #[test]
     fn fuzzy_ranks_split_above_help() {
-        let mut s = PaletteState::new(sample_items(), "Palette".into(), "split");
+        let mut s = PaletteState::new(sample_items(), "Palette".into(), "split", &sample_cwd());
         s.navigation_view = NavigationViewMode::List;
         assert_eq!(
             s.matched.first().map(|m| m.item.title.as_str()),
@@ -1277,7 +1288,7 @@ mod tests {
             binding: None,
             dispatch: None,
         });
-        let mut s = PaletteState::new(items, "Palette".into(), "open");
+        let mut s = PaletteState::new(items, "Palette".into(), "open", &sample_cwd());
         s.navigation_view = NavigationViewMode::List;
         s.recompute_matches();
         assert_eq!(
@@ -1288,7 +1299,7 @@ mod tests {
 
     #[test]
     fn move_selection_wraps() {
-        let mut s = PaletteState::new(sample_items(), "Palette".into(), "");
+        let mut s = PaletteState::new(sample_items(), "Palette".into(), "", &sample_cwd());
         s.navigation_view = NavigationViewMode::List;
         s.selected = 0;
         s.move_selection(-1); // wrap to last
@@ -1307,7 +1318,7 @@ mod tests {
 
     #[test]
     fn shell_mode_can_be_entered() {
-        let mut s = PaletteState::new(sample_items(), "Palette".into(), "");
+        let mut s = PaletteState::new(sample_items(), "Palette".into(), "", &sample_cwd());
         assert_eq!(s.input_mode, InputMode::Palette);
 
         s.enter_shell_mode();
@@ -1316,7 +1327,7 @@ mod tests {
 
     #[test]
     fn shell_empty_enter_closes_only_when_idle() {
-        let mut shell = ShellPanel::new();
+        let mut shell = ShellPanel::new(sample_cwd());
 
         assert!(shell.closes_on_empty_enter());
 
@@ -1334,7 +1345,7 @@ mod tests {
 
     #[test]
     fn shell_clear_removes_input_command_and_output() {
-        let mut shell = ShellPanel::new();
+        let mut shell = ShellPanel::new(sample_cwd());
         shell.input = "echo nope".into();
         shell.command = Some("echo old".into());
         shell.lines.push(ShellLine {
@@ -1383,7 +1394,7 @@ mod tests {
     #[test]
     fn shell_overlay_starts_compact_and_grows_with_output() {
         let area = Rect::new(0, 0, 100, 40);
-        let mut s = PaletteState::new(sample_items(), "Palette".into(), "");
+        let mut s = PaletteState::new(sample_items(), "Palette".into(), "", &sample_cwd());
         s.enter_shell_mode();
 
         assert_eq!(shell_overlay_height(area, &s), 7);
@@ -1445,5 +1456,39 @@ mod tests {
             spec.args_for("pwd"),
             vec!["-lc".to_string(), "pwd".to_string()]
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn shell_command_runs_in_panel_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = std::env::temp_dir().join("herdr-palette-shell-cwd-test");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let marker = tmp.join("cwd_marker.txt");
+        let script = tmp.join("fake_shell.sh");
+        let body = format!("#!/bin/sh\npwd > {}\n", marker.display());
+        std::fs::write(&script, body).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        std::env::set_var("SHELL", &script);
+        let mut shell = ShellPanel::new(tmp.clone());
+        shell.input = "ignored".to_string();
+        shell.start();
+
+        // Wait for the fake shell to finish writing its cwd marker.
+        for _ in 0..50 {
+            shell.drain_events();
+            if marker.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        let recorded = std::fs::read_to_string(&marker).unwrap_or_default();
+        let expected = tmp.canonicalize().unwrap_or(tmp.clone());
+        assert_eq!(recorded.trim(), expected.display().to_string());
+
+        std::env::remove_var("SHELL");
     }
 }

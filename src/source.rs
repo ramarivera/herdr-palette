@@ -21,14 +21,17 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// The full collected palette, plus the resolved config source (for display
-/// path), the theme name (for the header), and the resolved [`Palette`] (so
-/// the caller doesn't have to re-load the config to render).
+/// path), the theme name (for the header), the resolved [`Palette`] (so the
+/// caller doesn't have to re-load the config to render), and the focused
+/// pane's cwd (used as the working directory for shell commands and new
+/// surface creation).
 #[allow(dead_code)]
 pub struct PaletteData {
     pub items: Vec<Item>,
     pub config_path: String,
     pub theme_name: String,
     pub palette: Palette,
+    pub cwd: PathBuf,
 }
 
 /// Load config, discover actions, and collect every dispatchable + reference
@@ -75,13 +78,22 @@ pub fn collect(config_path: Option<PathBuf>) -> Result<PaletteData> {
 
     let config_path = display_path(&source.path);
     let palette = Palette::from_theme(&source.config.theme);
+    let cwd = focused_pane_cwd();
 
     Ok(PaletteData {
         items,
         config_path,
         theme_name,
         palette,
+        cwd,
     })
+}
+
+/// Resolve the focused pane's cwd, falling back to the current process cwd.
+fn focused_pane_cwd() -> PathBuf {
+    crate::dispatch::focused_pane_cwd()
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")))
 }
 
 /// Parsed row from `herdr plugin action list`.

@@ -14,6 +14,7 @@
 
 use crate::items::Dispatch;
 use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Map a Herdr keybinding action name to its dispatch path, or `None` if the
@@ -84,6 +85,50 @@ pub fn dispatch_for_action(action: &str) -> Option<Dispatch> {
     Some(d)
 }
 
+/// Query Herdr for the cwd of the currently focused pane. This is the
+/// directory the palette should use as the working directory for shell
+/// commands and for newly created panes/tabs/workspaces.
+///
+/// Falls back to the palette process's current directory if Herdr is
+/// unreachable or reports no focused pane.
+pub fn focused_pane_cwd() -> Option<PathBuf> {
+    let output = Command::new(herdr_bin().ok()?)
+        .args(["pane", "list"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let arr = list_array_for_kind(&v, "pane")?;
+    arr.iter()
+        .find(|entry| entry.get("focused").and_then(|f| f.as_bool()) == Some(true))
+        .and_then(|entry| entry.get("cwd").and_then(|c| c.as_str()))
+        .map(PathBuf::from)
+}
+
+/// For surface-creating `herdr` subcommands, inject an explicit `--cwd` flag
+/// so the new pane/workspace/tab starts in the focused pane's directory
+/// rather than inheriting the palette process's cwd.
+fn inject_cwd_for_creation(argv: &mut Vec<String>, cwd: &Path) {
+    if argv.iter().any(|s| s == "--cwd") {
+        return;
+    }
+    let kind = argv.get(1).map(|s| s.as_str());
+    let sub = argv.get(2).map(|s| s.as_str());
+    let needs_cwd = matches!(
+        (kind, sub),
+        (Some("pane"), Some("split"))
+            | (Some("workspace"), Some("create"))
+            | (Some("tab"), Some("create"))
+    );
+    if needs_cwd {
+        argv.push("--cwd".to_string());
+        argv.push(cwd.to_string_lossy().to_string());
+    }
+}
+
 /// Resolve the `herdr` binary path. `HERDR_BIN_PATH` wins, else PATH lookup.
 pub fn herdr_bin() -> Result<String> {
     if let Ok(p) = std::env::var("HERDR_BIN_PATH") {
@@ -109,41 +154,45 @@ fn which(cmd: &str) -> Result<String, std::io::Error> {
     ))
 }
 
-/// Execute a [`Dispatch`]. Spawns the resolved command(s) detached; the palette
-/// closes immediately after so Herdr retains focus. Errors are surfaced but do
-/// not panic.
-pub fn run(dispatch: &Dispatch) -> Result<()> {
+/// Execute a [`Dispatch`] using `cwd` as the working directory for the child
+/// process. New pane/workspace/tab creation commands also receive an explicit
+/// `--cwd` flag so they inherit the focused pane's directory. The palette
+/// closes immediately after so Herdr retains focus. Errors are surfaced but
+/// do not panic.
+pub fn run(dispatch: &Dispatch, cwd: &Path) -> Result<()> {
     match dispatch {
         Dispatch::Cli(argv) => {
-            let strs: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
-            run_argv(&strs)?;
+            let mut owned: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
+            inject_cwd_for_creation(&mut owned, cwd);
+            let strs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+            run_argv(&strs, cwd)?;
         }
         Dispatch::FocusWorkspace(id) => {
-            run_argv(&["herdr", "workspace", "focus", id])?;
+            run_argv(&["herdr", "workspace", "focus", id], cwd)?;
         }
         Dispatch::FocusTab(id) => {
-            run_argv(&["herdr", "tab", "focus", id])?;
+            run_argv(&["herdr", "tab", "focus", id], cwd)?;
         }
         Dispatch::FocusAgent(target) => {
-            run_argv(&["herdr", "agent", "focus", target])?;
+            run_argv(&["herdr", "agent", "focus", target], cwd)?;
         }
         Dispatch::NextWorkspace => {
-            focus_neighbor("workspace", Neighbor::Next)?;
+            focus_neighbor("workspace", Neighbor::Next, cwd)?;
         }
         Dispatch::PrevWorkspace => {
-            focus_neighbor("workspace", Neighbor::Prev)?;
+            focus_neighbor("workspace", Neighbor::Prev, cwd)?;
         }
         Dispatch::NextTab => {
-            focus_neighbor("tab", Neighbor::Next)?;
+            focus_neighbor("tab", Neighbor::Next, cwd)?;
         }
         Dispatch::PrevTab => {
-            focus_neighbor("tab", Neighbor::Prev)?;
+            focus_neighbor("tab", Neighbor::Prev, cwd)?;
         }
         Dispatch::NextAgent => {
-            focus_neighbor("agent", Neighbor::Next)?;
+            focus_neighbor("agent", Neighbor::Next, cwd)?;
         }
         Dispatch::PrevAgent => {
-            focus_neighbor("agent", Neighbor::Prev)?;
+            focus_neighbor("agent", Neighbor::Prev, cwd)?;
         }
     }
     Ok(())
@@ -158,7 +207,7 @@ enum Neighbor {
 /// Resolve the live ordered list of `<kind>` ids, find the current one, and
 /// focus its neighbor. `<kind>` ∈ {workspace, tab, agent}. For agents, "current"
 /// is the focused terminal; for workspaces/tabs it's the focused entity.
-fn focus_neighbor(kind: &str, neighbor: Neighbor) -> Result<()> {
+fn focus_neighbor(kind: &str, neighbor: Neighbor, cwd: &Path) -> Result<()> {
     let entries = list_entries(kind)?;
     let ids: Vec<String> = entries.iter().map(|(id, _)| id.clone()).collect();
     if ids.len() < 2 {
@@ -171,7 +220,7 @@ fn focus_neighbor(kind: &str, neighbor: Neighbor) -> Result<()> {
         Neighbor::Prev => (pos + ids.len() - 1) % ids.len(),
     };
     let id = &ids[target];
-    run_argv(&["herdr", kind, "focus", id])
+    run_argv(&["herdr", kind, "focus", id], cwd)
 }
 
 /// `herdr <kind> list` → ordered vector of (id, label). JSON is the default
@@ -272,6 +321,7 @@ fn list_array_for_kind<'a>(
         "workspace" => "workspaces",
         "tab" => "tabs",
         "agent" => "agents",
+        "pane" => "panes",
         other => other,
     };
     v.get("result")
@@ -290,14 +340,19 @@ fn id_field_for_kind(kind: &str) -> &'static str {
 }
 
 /// Run an argv, resolving `argv[0] == "herdr"` to the real binary path. String
-/// slices are promoted to owned for the child.
-fn run_argv(argv: &[&str]) -> Result<()> {
+/// slices are promoted to owned for the child. The child runs with `cwd` as
+/// its working directory.
+fn run_argv(argv: &[&str], cwd: &Path) -> Result<()> {
     let mut owned: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
     if owned.first().is_some_and(|first| first == "herdr") {
         owned[0] = herdr_bin()?;
     }
     let (cmd, args) = owned.split_first().context("empty argv")?;
-    Command::new(cmd).args(args).spawn()?.wait()?;
+    Command::new(cmd)
+        .args(args)
+        .current_dir(cwd)
+        .spawn()?
+        .wait()?;
     Ok(())
 }
 
@@ -428,5 +483,160 @@ mod tests {
             extract_entries(flat, "workspace").unwrap(),
             vec![("w1".into(), "a".into())]
         );
+    }
+
+    #[cfg(unix)]
+    mod cwd_propagation {
+        use super::*;
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::{Path, PathBuf};
+        use std::sync::Mutex;
+
+        static HERDR_BIN_LOCK: Mutex<()> = Mutex::new(());
+
+        fn lock_herdr_bin() -> std::sync::MutexGuard<'static, ()> {
+            HERDR_BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
+        fn write_fake_herdr(tmp: &Path, focused_cwd: &str) -> PathBuf {
+            let script = tmp.join("fake_herdr");
+            let log = tmp.join("log.txt");
+            let json = format!(
+                r#"{{"id":"cli:pane:list","result":{{"panes":[{{"pane_id":"w1:p1","cwd":"/wrong","focused":false}},{{"pane_id":"w1:p2","cwd":"{}","focused":true}}],"type":"pane_list"}}}}"#,
+                focused_cwd
+            );
+            let content = format!(
+                r#"#!/bin/sh
+if [ "$1" = "pane" ] && [ "$2" = "list" ]; then
+  printf '%s\n' '{}'
+else
+  printf '%s\n' "$*" >> {}
+  pwd >> {}
+fi
+"#,
+                json,
+                log.display(),
+                log.display()
+            );
+            fs::write(&script, content).unwrap();
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+            script
+        }
+
+        #[test]
+        fn focused_pane_cwd_reads_focused_pane() {
+            let _guard = lock_herdr_bin();
+            let tmp = tempfile::tempdir().unwrap();
+            let script = write_fake_herdr(tmp.path(), "/Users/x/focused");
+            std::env::set_var("HERDR_BIN_PATH", &script);
+            let cwd = focused_pane_cwd();
+            std::env::remove_var("HERDR_BIN_PATH");
+            drop(_guard);
+            assert_eq!(cwd, Some(PathBuf::from("/Users/x/focused")));
+        }
+
+        #[test]
+        fn inject_cwd_adds_flag_to_creation_commands() {
+            let cwd = Path::new("/Users/x/focused");
+
+            let mut pane = vec![
+                "herdr".into(),
+                "pane".into(),
+                "split".into(),
+                "--direction".into(),
+                "right".into(),
+                "--focus".into(),
+            ];
+            inject_cwd_for_creation(&mut pane, cwd);
+            assert_eq!(
+                pane,
+                vec![
+                    "herdr",
+                    "pane",
+                    "split",
+                    "--direction",
+                    "right",
+                    "--focus",
+                    "--cwd",
+                    "/Users/x/focused"
+                ]
+            );
+
+            let mut workspace = vec!["herdr".into(), "workspace".into(), "create".into(), "--focus".into()];
+            inject_cwd_for_creation(&mut workspace, cwd);
+            assert_eq!(
+                workspace,
+                vec!["herdr", "workspace", "create", "--focus", "--cwd", "/Users/x/focused"]
+            );
+
+            let mut tab = vec!["herdr".into(), "tab".into(), "create".into(), "--focus".into()];
+            inject_cwd_for_creation(&mut tab, cwd);
+            assert_eq!(
+                tab,
+                vec!["herdr", "tab", "create", "--focus", "--cwd", "/Users/x/focused"]
+            );
+        }
+
+        #[test]
+        fn inject_cwd_skips_non_creation_commands() {
+            let cwd = Path::new("/Users/x/focused");
+            let mut argv = vec![
+                "herdr".into(),
+                "pane".into(),
+                "focus".into(),
+                "--direction".into(),
+                "left".into(),
+            ];
+            inject_cwd_for_creation(&mut argv, cwd);
+            assert_eq!(argv, vec!["herdr", "pane", "focus", "--direction", "left"]);
+        }
+
+        #[test]
+        fn inject_cwd_does_not_duplicate_existing_flag() {
+            let cwd = Path::new("/Users/x/focused");
+            let mut argv = vec![
+                "herdr".into(),
+                "pane".into(),
+                "split".into(),
+                "--cwd".into(),
+                "/other".into(),
+                "--focus".into(),
+            ];
+            inject_cwd_for_creation(&mut argv, cwd);
+            assert_eq!(
+                argv,
+                vec!["herdr", "pane", "split", "--cwd", "/other", "--focus"]
+            );
+        }
+
+        #[test]
+        fn dispatch_run_sets_child_cwd_and_injects_cwd_flag() {
+            let _guard = lock_herdr_bin();
+            let tmp = tempfile::tempdir().unwrap();
+            let cwd = tmp.path().to_path_buf();
+            let script = write_fake_herdr(tmp.path(), cwd.display().to_string().as_str());
+            std::env::set_var("HERDR_BIN_PATH", &script);
+
+            let dispatch = Dispatch::Cli(vec![
+                "herdr".into(),
+                "pane".into(),
+                "split".into(),
+                "--direction".into(),
+                "right".into(),
+                "--focus".into(),
+            ]);
+            run(&dispatch, &cwd).unwrap();
+
+            std::env::remove_var("HERDR_BIN_PATH");
+            drop(_guard);
+
+            let log = fs::read_to_string(tmp.path().join("log.txt")).unwrap();
+            assert!(log.contains(&format!(
+                "pane split --direction right --focus --cwd {}",
+                cwd.display()
+            )));
+            assert!(log.contains(cwd.display().to_string().as_str()));
+        }
     }
 }
