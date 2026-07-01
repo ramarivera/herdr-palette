@@ -2,7 +2,7 @@
 # Cross-reference: README.md and https://github.com/ramarivera/herdr-palette
 id = "ramarivera.palette"
 name = "Herdr Palette"
-version = "0.1.2"
+version = "0.1.6"
 min_herdr_version = "0.7.0"
 description = "A Raycast/Linear-style fuzzy command palette for Herdr."
 platforms = ["linux", "macos"]
@@ -29,6 +29,24 @@ command = [
   "--focus",
 ]
 
+[[actions]]
+id = "shell"
+title = "Open palette shell"
+contexts = ["workspace", "tab", "pane", "global"]
+command = [
+  "herdr",
+  "plugin",
+  "pane",
+  "open",
+  "--plugin",
+  "ramarivera.palette",
+  "--entrypoint",
+  "shell",
+  "--placement",
+  "overlay",
+  "--focus",
+]
+
 [[panes]]
 id = "overlay"
 title = "Palette"
@@ -36,3 +54,11 @@ placement = "overlay"
 # Herdr resolves pane commands through PATH. The toolbox installs this binary
 # through the pinned cargo:herdr-palette mise tool before linking the manifest.
 command = ["herdr-palette"]
+
+[[panes]]
+id = "shell"
+title = "Palette Shell"
+placement = "overlay"
+# Herdr resolves pane commands through PATH. The toolbox installs this binary
+# through the pinned cargo:herdr-palette mise tool before linking the manifest.
+command = ["herdr-palette", "--shell"]

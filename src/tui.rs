@@ -230,6 +230,10 @@ impl ShellPanel {
         });
     }
 
+    fn closes_on_empty_enter(&self) -> bool {
+        !self.running && self.input.trim().is_empty()
+    }
+
     fn drain_events(&mut self) {
         let Some(rx) = self.rx.take() else {
             return;
@@ -641,12 +645,6 @@ impl PaletteState {
         self.shell.enter();
     }
 
-    fn leave_shell_mode(&mut self) {
-        if !self.shell.running {
-            self.input_mode = InputMode::Palette;
-        }
-    }
-
     fn drain_shell_events(&mut self) {
         self.shell.drain_events();
     }
@@ -721,10 +719,15 @@ fn run_loop(state: &mut PaletteState, palette: Palette) -> Result<Outcome> {
             }
             if state.input_mode == InputMode::Shell {
                 match (key.code, key.modifiers) {
-                    (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                        state.leave_shell_mode();
+                    (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL)
+                        if !state.shell.running =>
+                    {
+                        return Ok(Outcome::Cancelled);
                     }
                     (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+                        return Ok(Outcome::Cancelled);
+                    }
+                    (KeyCode::Enter, _) if state.shell.closes_on_empty_enter() => {
                         return Ok(Outcome::Cancelled);
                     }
                     (KeyCode::Enter, _) => state.shell.start(),
@@ -852,7 +855,7 @@ fn draw(f: &mut Frame<'_>, state: &mut PaletteState, palette: Palette) {
             state.config_path
         ),
         InputMode::Shell => {
-            "Enter run shell · Esc palette · Ctrl-u clear · Ctrl-d cancel".to_string()
+            "Enter run · empty Enter/Esc close · Ctrl-u clear · Ctrl-d cancel".to_string()
         }
     };
     let footer = Paragraph::new(Line::from(vec![Span::styled(
@@ -1303,15 +1306,30 @@ mod tests {
     }
 
     #[test]
-    fn shell_mode_can_be_entered_and_left_when_idle() {
+    fn shell_mode_can_be_entered() {
         let mut s = PaletteState::new(sample_items(), "Palette".into(), "");
         assert_eq!(s.input_mode, InputMode::Palette);
 
         s.enter_shell_mode();
         assert_eq!(s.input_mode, InputMode::Shell);
+    }
 
-        s.leave_shell_mode();
-        assert_eq!(s.input_mode, InputMode::Palette);
+    #[test]
+    fn shell_empty_enter_closes_only_when_idle() {
+        let mut shell = ShellPanel::new();
+
+        assert!(shell.closes_on_empty_enter());
+
+        shell.input = "echo ok".into();
+        assert!(!shell.closes_on_empty_enter());
+
+        shell.input.clear();
+        shell.running = true;
+        assert!(!shell.closes_on_empty_enter());
+
+        shell.running = false;
+        shell.command = Some("echo ok".into());
+        assert!(shell.closes_on_empty_enter());
     }
 
     #[test]

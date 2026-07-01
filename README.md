@@ -63,6 +63,9 @@ discovery, theming, and binding scoring.
 # Interactive overlay, when stdout is a TTY.
 ./target/release/herdr-palette
 
+# Start the overlay directly in shell mode.
+./target/release/herdr-palette --shell
+
 # Snapshot to stdout for tests/screenshots/non-TTY.
 ./target/release/herdr-palette --snapshot --query "split" --width 100 --height 30
 
@@ -77,6 +80,7 @@ discovery, theming, and binding scoring.
 | ---- | ------- | ------- |
 | `--config <PATH>` | `~/.config/herdr/config.toml` | Config to reflect |
 | `--query <Q>` | `""` | Initial fuzzy query |
+| `--shell` | off | Start directly in shell mode |
 | `--snapshot` | off | Render once to stdout |
 | `--width` / `--height` | `100` / `24` | Snapshot dimensions |
 | `--debug-kinds` | off | Print item counts by source |
@@ -94,6 +98,9 @@ discovery, theming, and binding scoring.
 | `Esc` / `Ctrl-c` / `Ctrl-d` | Cancel |
 | `Ctrl-u` | Clear query |
 | typing | Append to query |
+
+Shell mode runs a command with the login shell. When no shell command is
+running, `Esc`, `Ctrl-c`, `Ctrl-d`, or empty `Enter` closes the plugin pane.
 
 ## Theming
 
