@@ -1112,7 +1112,7 @@ fn centered_rect(area: Rect, width_pct: u16, height: u16) -> Rect {
             Constraint::Min(0),
         ])
         .split(area)[1];
-    
+
     Layout::default()
         .direction(Direction::Horizontal)
         .constraints([

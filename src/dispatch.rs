@@ -563,18 +563,42 @@ fi
                 ]
             );
 
-            let mut workspace = vec!["herdr".into(), "workspace".into(), "create".into(), "--focus".into()];
+            let mut workspace = vec![
+                "herdr".into(),
+                "workspace".into(),
+                "create".into(),
+                "--focus".into(),
+            ];
             inject_cwd_for_creation(&mut workspace, cwd);
             assert_eq!(
                 workspace,
-                vec!["herdr", "workspace", "create", "--focus", "--cwd", "/Users/x/focused"]
+                vec![
+                    "herdr",
+                    "workspace",
+                    "create",
+                    "--focus",
+                    "--cwd",
+                    "/Users/x/focused"
+                ]
             );
 
-            let mut tab = vec!["herdr".into(), "tab".into(), "create".into(), "--focus".into()];
+            let mut tab = vec![
+                "herdr".into(),
+                "tab".into(),
+                "create".into(),
+                "--focus".into(),
+            ];
             inject_cwd_for_creation(&mut tab, cwd);
             assert_eq!(
                 tab,
-                vec!["herdr", "tab", "create", "--focus", "--cwd", "/Users/x/focused"]
+                vec![
+                    "herdr",
+                    "tab",
+                    "create",
+                    "--focus",
+                    "--cwd",
+                    "/Users/x/focused"
+                ]
             );
         }
 
