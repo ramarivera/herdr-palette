@@ -160,7 +160,7 @@ impl ShellPanel {
     }
 
     fn start(&mut self) {
-        let command = self.input.trim().to_string();
+        let command = inject_focus_for_herdr_create(self.input.trim());
         if command.is_empty() || self.running {
             return;
         }
@@ -317,6 +317,47 @@ fn shell_command_spec_for(program: impl Into<String>) -> ShellCommandSpec {
         label,
         style,
     }
+}
+
+/// When a user types a Herdr creation command in shell mode, automatically
+/// append `--focus` so the newly created workspace/tab/pane is focused.
+/// This ensures that after the palette closes the user lands inside the
+/// thing they just created.
+fn inject_focus_for_herdr_create(command: &str) -> String {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+
+    // Avoid rewriting compound shell constructs; only touch simple herdr CLI
+    // invocations that the user typed literally.
+    if trimmed.contains(|c: char| matches!(c, ';' | '&' | '|' | '>' | '<' | '$' | '\\' | '\n' | '\r')) {
+        return trimmed.to_string();
+    }
+
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    if tokens.len() < 3 {
+        return trimmed.to_string();
+    }
+
+    let is_herdr = tokens[0].ends_with("herdr");
+    let kind = tokens[1];
+    let sub = tokens[2];
+
+    let is_create = is_herdr
+        && matches!(
+            (kind, sub),
+            ("workspace", "create")
+                | ("tab", "create")
+                | ("pane", "create")
+                | ("pane", "split")
+        );
+
+    if !is_create || tokens.iter().any(|t| *t == "--focus") {
+        return trimmed.to_string();
+    }
+
+    format!("{} --focus", trimmed)
 }
 
 fn shell_label(program: &str) -> String {
@@ -1490,5 +1531,65 @@ mod tests {
         assert_eq!(recorded.trim(), expected.display().to_string());
 
         std::env::remove_var("SHELL");
+    }
+
+    #[test]
+    fn inject_focus_adds_flag_to_herdr_creates() {
+        assert_eq!(
+            inject_focus_for_herdr_create("herdr workspace create Foo"),
+            "herdr workspace create Foo --focus"
+        );
+        assert_eq!(
+            inject_focus_for_herdr_create("herdr tab create Bar"),
+            "herdr tab create Bar --focus"
+        );
+        assert_eq!(
+            inject_focus_for_herdr_create("herdr pane split --direction right"),
+            "herdr pane split --direction right --focus"
+        );
+        assert_eq!(
+            inject_focus_for_herdr_create("herdr pane create"),
+            "herdr pane create --focus"
+        );
+    }
+
+    #[test]
+    fn inject_focus_respects_existing_flag() {
+        assert_eq!(
+            inject_focus_for_herdr_create("herdr workspace create Foo --focus"),
+            "herdr workspace create Foo --focus"
+        );
+        assert_eq!(
+            inject_focus_for_herdr_create("herdr tab create --focus Bar"),
+            "herdr tab create --focus Bar"
+        );
+    }
+
+    #[test]
+    fn inject_focus_skips_non_herdr_and_compound_commands() {
+        assert_eq!(
+            inject_focus_for_herdr_create("ls -la"),
+            "ls -la"
+        );
+        assert_eq!(
+            inject_focus_for_herdr_create("herdr workspace create Foo; echo done"),
+            "herdr workspace create Foo; echo done"
+        );
+        assert_eq!(
+            inject_focus_for_herdr_create("herdr workspace create Foo && herdr tab create Bar"),
+            "herdr workspace create Foo && herdr tab create Bar"
+        );
+        assert_eq!(
+            inject_focus_for_herdr_create("cd /tmp && herdr workspace create Foo"),
+            "cd /tmp && herdr workspace create Foo"
+        );
+    }
+
+    #[test]
+    fn inject_focus_preserves_whitespace_and_quotes() {
+        assert_eq!(
+            inject_focus_for_herdr_create("  herdr workspace create \"Foo Bar\"  "),
+            "herdr workspace create \"Foo Bar\" --focus"
+        );
     }
 }
