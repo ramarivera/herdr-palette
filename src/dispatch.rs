@@ -85,13 +85,38 @@ pub fn dispatch_for_action(action: &str) -> Option<Dispatch> {
     Some(d)
 }
 
-/// Query Herdr for the cwd of the currently focused pane. This is the
-/// directory the palette should use as the working directory for shell
-/// commands and for newly created panes/tabs/workspaces.
+/// Query Herdr for the cwd of the current caller pane. This is the directory
+/// the palette should use as the working directory for shell commands and for
+/// newly created panes/tabs/workspaces/plugin panes.
 ///
-/// Falls back to the palette process's current directory if Herdr is
-/// unreachable or reports no focused pane.
+/// Herdr's global focused pane can move while a plugin is opening; prefer the
+/// process/caller-aware `pane current` result, then fall back to scanning the
+/// focused pane list for older or degraded Herdr contexts.
 pub fn focused_pane_cwd() -> Option<PathBuf> {
+    current_pane_cwd().or_else(focused_pane_cwd_from_list)
+}
+
+fn current_pane_cwd() -> Option<PathBuf> {
+    let output = Command::new(herdr_bin().ok()?)
+        .args(["pane", "current"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    extract_current_pane_cwd(&text)
+}
+
+fn extract_current_pane_cwd(text: &str) -> Option<PathBuf> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    v.get("result")
+        .and_then(|r| r.get("pane"))
+        .or_else(|| v.get("pane"))
+        .and_then(cwd_from_pane_entry)
+}
+
+fn focused_pane_cwd_from_list() -> Option<PathBuf> {
     let output = Command::new(herdr_bin().ok()?)
         .args(["pane", "list"])
         .output()
@@ -104,8 +129,17 @@ pub fn focused_pane_cwd() -> Option<PathBuf> {
     let arr = list_array_for_kind(&v, "pane")?;
     arr.iter()
         .find(|entry| entry.get("focused").and_then(|f| f.as_bool()) == Some(true))
-        .and_then(|entry| entry.get("cwd").and_then(|c| c.as_str()))
-        .map(PathBuf::from)
+        .and_then(cwd_from_pane_entry)
+}
+
+fn cwd_from_pane_entry(entry: &serde_json::Value) -> Option<PathBuf> {
+    ["foreground_cwd", "cwd"].iter().find_map(|key| {
+        entry
+            .get(*key)
+            .and_then(|c| c.as_str())
+            .filter(|c| !c.is_empty())
+            .map(PathBuf::from)
+    })
 }
 
 /// For surface-creating `herdr` subcommands, inject an explicit `--cwd` flag
@@ -115,14 +149,20 @@ fn inject_cwd_for_creation(argv: &mut Vec<String>, cwd: &Path) {
     if argv.iter().any(|s| s == "--cwd") {
         return;
     }
+    let program = argv.first().map(|s| s.as_str());
     let kind = argv.get(1).map(|s| s.as_str());
     let sub = argv.get(2).map(|s| s.as_str());
-    let needs_cwd = matches!(
-        (kind, sub),
-        (Some("pane"), Some("split"))
-            | (Some("workspace"), Some("create"))
-            | (Some("tab"), Some("create"))
-    );
+    let third = argv.get(3).map(|s| s.as_str());
+    let needs_cwd = program == Some("herdr")
+        && (matches!(
+            (kind, sub),
+            (Some("pane"), Some("split"))
+                | (Some("workspace"), Some("create"))
+                | (Some("tab"), Some("create"))
+        ) || matches!(
+            (kind, sub, third),
+            (Some("plugin"), Some("pane"), Some("open"))
+        ));
     if needs_cwd {
         argv.push("--cwd".to_string());
         argv.push(cwd.to_string_lossy().to_string());
@@ -485,6 +525,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn extract_current_pane_cwd_prefers_foreground_cwd() {
+        let current = r#"{"result":{"pane":{"pane_id":"w1:p1","cwd":"/Users/x/base","foreground_cwd":"/Users/x/foreground"}}}"#;
+        assert_eq!(
+            extract_current_pane_cwd(current),
+            Some(PathBuf::from("/Users/x/foreground"))
+        );
+
+        let cwd_only = r#"{"result":{"pane":{"pane_id":"w1:p1","cwd":"/Users/x/base"}}}"#;
+        assert_eq!(
+            extract_current_pane_cwd(cwd_only),
+            Some(PathBuf::from("/Users/x/base"))
+        );
+    }
+
     #[cfg(unix)]
     mod cwd_propagation {
         use super::*;
@@ -522,6 +577,58 @@ fi
             fs::write(&script, content).unwrap();
             fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
             script
+        }
+
+        fn write_fake_herdr_with_current_and_focused(
+            tmp: &Path,
+            current_cwd: &str,
+            focused_cwd: &str,
+        ) -> PathBuf {
+            let script = tmp.join("fake_herdr");
+            let log = tmp.join("log.txt");
+            let current_json = format!(
+                r#"{{"id":"cli:pane:current","result":{{"pane":{{"pane_id":"w1:p1","cwd":"/base","foreground_cwd":"{}","focused":false}},"type":"pane_current"}}}}"#,
+                current_cwd
+            );
+            let list_json = format!(
+                r#"{{"id":"cli:pane:list","result":{{"panes":[{{"pane_id":"w1:p1","cwd":"{}","focused":true}}],"type":"pane_list"}}}}"#,
+                focused_cwd
+            );
+            let content = format!(
+                r#"#!/bin/sh
+if [ "$1" = "pane" ] && [ "$2" = "current" ]; then
+  printf '%s\n' '{}'
+elif [ "$1" = "pane" ] && [ "$2" = "list" ]; then
+  printf '%s\n' '{}'
+else
+  printf '%s\n' "$*" >> {}
+  pwd >> {}
+fi
+"#,
+                current_json,
+                list_json,
+                log.display(),
+                log.display()
+            );
+            fs::write(&script, content).unwrap();
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+            script
+        }
+
+        #[test]
+        fn focused_pane_cwd_prefers_current_pane_over_focused_list() {
+            let _guard = lock_herdr_bin();
+            let tmp = tempfile::tempdir().unwrap();
+            let script = write_fake_herdr_with_current_and_focused(
+                tmp.path(),
+                "/Users/x/current",
+                "/Users/x/focused",
+            );
+            std::env::set_var("HERDR_BIN_PATH", &script);
+            let cwd = focused_pane_cwd();
+            std::env::remove_var("HERDR_BIN_PATH");
+            drop(_guard);
+            assert_eq!(cwd, Some(PathBuf::from("/Users/x/current")));
         }
 
         #[test]
@@ -596,6 +703,33 @@ fi
                     "tab",
                     "create",
                     "--focus",
+                    "--cwd",
+                    "/Users/x/focused"
+                ]
+            );
+
+            let mut plugin = vec![
+                "herdr".into(),
+                "plugin".into(),
+                "pane".into(),
+                "open".into(),
+                "--plugin".into(),
+                "ramarivera.palette".into(),
+                "--entrypoint".into(),
+                "shell".into(),
+            ];
+            inject_cwd_for_creation(&mut plugin, cwd);
+            assert_eq!(
+                plugin,
+                vec![
+                    "herdr",
+                    "plugin",
+                    "pane",
+                    "open",
+                    "--plugin",
+                    "ramarivera.palette",
+                    "--entrypoint",
+                    "shell",
                     "--cwd",
                     "/Users/x/focused"
                 ]

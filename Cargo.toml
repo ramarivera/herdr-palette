@@ -1,6 +1,6 @@
 [package]
 name = "herdr-palette"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 description = "A Raycast/Linear-style fuzzy command palette for Herdr"
 license = "MIT"
