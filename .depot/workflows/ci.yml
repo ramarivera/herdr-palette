@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: fmt, clippy, test, package, audit
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - fail-fast: false
+        parallel:
+          - name: Format
+            run: cargo fmt --all -- --check
+          - name: Clippy
+            run: cargo clippy --all-targets --all-features -- -D warnings
+          - sequential:
+              - name: Test
+                run: cargo test --all-features
+              - name: Package
+                run: cargo package --locked
+          - sequential:
+              - name: Install cargo-audit
+                run: cargo install cargo-audit --locked
+              - name: Audit
+                run: cargo audit

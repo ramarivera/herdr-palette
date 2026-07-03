@@ -280,19 +280,17 @@ struct ShellCommandSpec {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellCommandStyle {
-    DashLoginCommand,
-    LongLoginCommand,
-    PowerShellLoginCommand,
+    PosixDash,
+    LongFlag,
+    PowerShell,
 }
 
 impl ShellCommandSpec {
     fn args_for(&self, command: &str) -> Vec<String> {
         match self.style {
-            ShellCommandStyle::DashLoginCommand => vec!["-lc".into(), command.into()],
-            ShellCommandStyle::LongLoginCommand => {
-                vec!["--login".into(), "-c".into(), command.into()]
-            }
-            ShellCommandStyle::PowerShellLoginCommand => {
+            ShellCommandStyle::PosixDash => vec!["-lc".into(), command.into()],
+            ShellCommandStyle::LongFlag => vec!["--login".into(), "-c".into(), command.into()],
+            ShellCommandStyle::PowerShell => {
                 vec!["-Login".into(), "-Command".into(), command.into()]
             }
         }
@@ -307,9 +305,9 @@ fn shell_command_spec_for(program: impl Into<String>) -> ShellCommandSpec {
     let program = program.into();
     let label = shell_label(&program);
     let style = match label.as_str() {
-        "nu" | "nushell" | "fish" => ShellCommandStyle::LongLoginCommand,
-        "pwsh" | "powershell" => ShellCommandStyle::PowerShellLoginCommand,
-        _ => ShellCommandStyle::DashLoginCommand,
+        "nu" | "nushell" | "fish" => ShellCommandStyle::LongFlag,
+        "pwsh" | "powershell" => ShellCommandStyle::PowerShell,
+        _ => ShellCommandStyle::PosixDash,
     };
 
     ShellCommandSpec {
@@ -331,7 +329,7 @@ fn inject_focus_for_herdr_create(command: &str) -> String {
 
     // Avoid rewriting compound shell constructs; only touch simple herdr CLI
     // invocations that the user typed literally.
-    if trimmed.contains(|c: char| matches!(c, ';' | '&' | '|' | '>' | '<' | '$' | '\\' | '\n' | '\r')) {
+    if trimmed.contains([';', '&', '|', '>', '<', '$', '\\', '\n', '\r']) {
         return trimmed.to_string();
     }
 
@@ -347,13 +345,10 @@ fn inject_focus_for_herdr_create(command: &str) -> String {
     let is_create = is_herdr
         && matches!(
             (kind, sub),
-            ("workspace", "create")
-                | ("tab", "create")
-                | ("pane", "create")
-                | ("pane", "split")
+            ("workspace", "create") | ("tab", "create") | ("pane", "create") | ("pane", "split")
         );
 
-    if !is_create || tokens.iter().any(|t| *t == "--focus") {
+    if !is_create || tokens.contains(&"--focus") {
         return trimmed.to_string();
     }
 
@@ -1567,10 +1562,7 @@ mod tests {
 
     #[test]
     fn inject_focus_skips_non_herdr_and_compound_commands() {
-        assert_eq!(
-            inject_focus_for_herdr_create("ls -la"),
-            "ls -la"
-        );
+        assert_eq!(inject_focus_for_herdr_create("ls -la"), "ls -la");
         assert_eq!(
             inject_focus_for_herdr_create("herdr workspace create Foo; echo done"),
             "herdr workspace create Foo; echo done"

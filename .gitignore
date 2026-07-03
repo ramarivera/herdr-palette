@@ -3,3 +3,4 @@
 *.pdb
 .env
 .env.*
+*.orig

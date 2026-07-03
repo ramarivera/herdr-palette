@@ -1,4 +1,11 @@
-# herdr-palette
+# Herdr Palette
+
+![Herdr Palette cover](assets/readme-cover.png)
+
+[![Crates.io](https://img.shields.io/crates/v/herdr-palette.svg)](https://crates.io/crates/herdr-palette)
+[![Docs.rs](https://docs.rs/herdr-palette/badge.svg)](https://docs.rs/herdr-palette)
+[![CI](https://github.com/ramarivera/herdr-palette/actions/workflows/ci.yml/badge.svg)](https://github.com/ramarivera/herdr-palette/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A Raycast/Linear-style command palette for
 [Herdr](https://github.com/ramarivera/herdr), the terminal workspace manager
@@ -47,33 +54,48 @@ mode sorts by fuzzy score, dispatchability, source priority, then title.
 - **Reference-only:** rows that are keybinding-only or need a target/prompt the
   palette cannot provide safely yet. These render greyed and ignore Enter.
 
-## Build
+## Install
+
+```bash
+cargo install herdr-palette --locked
+```
+
+Herdr plugin support requires Herdr `>= 0.7.0`. After installing the binary,
+link the plugin manifest from this checkout or from your plugin manifest
+directory:
+
+```bash
+herdr plugin link .
+herdr plugin pane open --plugin ramarivera.palette --entrypoint overlay --placement overlay --focus
+```
+
+For local development only:
 
 ```bash
 cargo build --release
+cargo install --path . --locked
 ```
 
-Requires the `herdr-pretty-which` crate as a path sibling at
-`../herdr-pretty-which`. That crate provides config loading, action modeling,
-discovery, theming, and binding scoring.
+The published crate depends on `herdr-pretty-which` from crates.io. A sibling
+checkout is only needed when developing both crates together.
 
 ## Run
 
 ```bash
 # Interactive overlay, when stdout is a TTY.
-./target/release/herdr-palette
+herdr-palette
 
 # Start the overlay directly in shell mode.
-./target/release/herdr-palette --shell
+herdr-palette --shell
 
 # Snapshot to stdout for tests/screenshots/non-TTY.
-./target/release/herdr-palette --snapshot --query "split" --width 100 --height 30
+herdr-palette --snapshot --query "split" --width 100 --height 30
 
 # Diagnose which sources are contributing items.
-./target/release/herdr-palette --debug-kinds
+herdr-palette --debug-kinds
 
 # Print occupied chords from all collected key sources.
-./target/release/herdr-palette --debug-keys
+herdr-palette --debug-keys
 ```
 
 | Flag | Default | Purpose |
