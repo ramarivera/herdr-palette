@@ -1,14 +1,10 @@
-# Herdr plugin manifest for Herdr Palette. Requires Herdr >= 0.7.0 plugin support.
-# Cross-reference: README.md and https://github.com/ramarivera/herdr-palette
+# Herdr plugin manifest for the cargo-installed binary flow. Requires Herdr >= 0.7.0 plugin support.
+# Cross-reference: README.md and herdr-plugin.toml
 id = "ramarivera.palette"
 name = "Herdr Palette"
 version = "0.1.10"
 min_herdr_version = "0.7.0"
 description = "A Raycast/Linear-style fuzzy command palette for Herdr."
-platforms = ["linux", "macos"]
-
-[[build]]
-command = ["cargo", "build", "--release"]
 platforms = ["linux", "macos"]
 
 [[actions]]
@@ -51,16 +47,10 @@ command = [
 id = "overlay"
 title = "Palette"
 placement = "overlay"
-# GitHub installs run the build command above and leave the binary in the
-# managed checkout. Cross-reference: cargo/herdr-plugin.toml for the cargo
-# installed binary flow.
-command = ["target/release/herdr-palette"]
+command = ["herdr-palette"]
 
 [[panes]]
 id = "shell"
 title = "Palette Shell"
 placement = "overlay"
-# GitHub installs run the build command above and leave the binary in the
-# managed checkout. Cross-reference: cargo/herdr-plugin.toml for the cargo
-# installed binary flow.
-command = ["target/release/herdr-palette", "--shell"]
+command = ["herdr-palette", "--shell"]

@@ -689,9 +689,9 @@ dependencies = [
 
 [[package]]
 name = "herdr-pretty-which"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a6e783c0f7416cd9959fd25c9967789ee3777ed1ca1cb797218e9e401b774ee"
+checksum = "e57cac009cf3ca2050dccd7377dbf02a3bb4df1048dba2f9bdadbfcdece63169"
 dependencies = [
  "anyhow",
  "clap",

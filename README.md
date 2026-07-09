@@ -61,12 +61,18 @@ cargo install herdr-palette --locked
 ```
 
 Herdr plugin support requires Herdr `>= 0.7.0`. After installing the binary,
-link the plugin manifest from this checkout or from your plugin manifest
-directory:
+link the cargo-installed manifest from this checkout:
 
 ```bash
-herdr plugin link .
+herdr plugin link cargo
 herdr plugin pane open --plugin ramarivera.palette --entrypoint overlay --placement overlay --focus
+```
+
+You can also install the GitHub-managed plugin checkout directly. Herdr will
+build the release binary during install and run it from the managed checkout:
+
+```bash
+herdr plugin install ramarivera/herdr-palette
 ```
 
 For local development only:
