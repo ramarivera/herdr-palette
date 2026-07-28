@@ -163,13 +163,36 @@ command = [
 ]
 ```
 
-Bind it to a chord in your Herdr config:
+Bind the action to a chord in your Herdr config with a `[[keys.command]]`
+entry:
 
 ```toml
-[keys]
-# e.g. open the palette with prefix+space
-workspace_picker = "prefix+space"
+[[keys.command]]
+key = "prefix+space"
+type = "plugin_action"
+command = "ramarivera.palette.open"
+description = "Command palette"
 ```
+
+Qualify the action id with the plugin id. `open` is a common action id — a
+bare `command = "open"` matches every plugin that declares one, and Herdr
+rejects that with `ambiguous_plugin_action`. Use `ramarivera.palette.shell` to
+open straight into shell mode.
+
+If you would rather not rely on the qualified form, the explicit equivalent is:
+
+```toml
+[[keys.command]]
+key = "prefix+space"
+type = "shell"
+command = "herdr plugin action invoke open --plugin ramarivera.palette"
+```
+
+Then `herdr server reload-config`, or `prefix+shift+r` from inside Herdr.
+
+Note that `workspace_picker` is unrelated — it is Herdr's own built-in
+workspace picker (default `prefix+w`), not a palette binding. Run
+`herdr-palette --debug-keys` to find a chord that is actually free.
 
 ## Architecture
 
