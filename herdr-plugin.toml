@@ -52,15 +52,19 @@ id = "overlay"
 title = "Palette"
 placement = "overlay"
 # GitHub installs run the build command above and leave the binary in the
-# managed checkout. Cross-reference: cargo/herdr-plugin.toml for the cargo
-# installed binary flow.
-command = ["target/release/herdr-palette"]
+# managed checkout, and herdr runs pane commands with the plugin root as cwd.
+# The leading `./` is required: herdr resolves a bare relative argv[0] through
+# $PATH, so `target/release/herdr-palette` fails to spawn on a GitHub install.
+# Cross-reference: cargo/herdr-plugin.toml for the cargo installed binary flow.
+command = ["./target/release/herdr-palette"]
 
 [[panes]]
 id = "shell"
 title = "Palette Shell"
 placement = "overlay"
 # GitHub installs run the build command above and leave the binary in the
-# managed checkout. Cross-reference: cargo/herdr-plugin.toml for the cargo
-# installed binary flow.
-command = ["target/release/herdr-palette", "--shell"]
+# managed checkout, and herdr runs pane commands with the plugin root as cwd.
+# The leading `./` is required: herdr resolves a bare relative argv[0] through
+# $PATH, so `target/release/herdr-palette` fails to spawn on a GitHub install.
+# Cross-reference: cargo/herdr-plugin.toml for the cargo installed binary flow.
+command = ["./target/release/herdr-palette", "--shell"]
