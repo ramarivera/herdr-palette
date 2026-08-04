@@ -165,15 +165,21 @@ pub fn item_from_command(cmd: &CommandBinding) -> Item {
     }
 }
 
-/// A discovered plugin action row from `plugin.action.list`. The action ships a
-/// fully-resolved `command[]`, so we store and run it directly via
-/// [`Dispatch::Cli`] — no synthetic invoke indirection.
-pub fn item_from_plugin_action(
-    plugin_id: &str,
-    action_id: &str,
-    title: Option<&str>,
-    command: &[String],
-) -> Item {
+/// A discovered plugin action row from `plugin.action.list`.
+///
+/// The listed `command[]` is NOT run directly. Herdr executes a plugin action
+/// with the plugin's own root as cwd and `HERDR_PLUGIN_ROOT` in its
+/// environment, and manifests rely on that: commands like
+/// `["bash", "scripts/open.sh"]` are relative to the plugin root, not to
+/// whatever pane the palette happens to be dispatched from. Running the argv
+/// ourselves resolves it against the wrong directory — and, because the
+/// palette is itself a plugin pane, an `$HERDR_PLUGIN_ROOT` in the command
+/// would expand to the *palette's* root.
+///
+/// So dispatch through `herdr plugin action invoke <plugin>.<action>` and let
+/// herdr resolve cwd and environment. This also means the action is recorded
+/// in the plugin log, where a direct spawn is invisible.
+pub fn item_from_plugin_action(plugin_id: &str, action_id: &str, title: Option<&str>) -> Item {
     let qualified = if action_id.contains('.') {
         action_id.to_string()
     } else {
@@ -185,11 +191,18 @@ pub fn item_from_plugin_action(
     Item {
         kind: ItemKind::PluginAction,
         title: label,
-        subtitle: qualified,
+        subtitle: qualified.clone(),
         keys: Vec::new(),
         tree_path: vec!["Plugins".to_string(), plugin_id.to_string()],
         binding: None,
-        dispatch: Some(Dispatch::Cli(command.to_vec())),
+        // `herdr` in argv[0] is resolved to the real binary by `run_argv`.
+        dispatch: Some(Dispatch::Cli(vec![
+            "herdr".to_string(),
+            "plugin".to_string(),
+            "action".to_string(),
+            "invoke".to_string(),
+            qualified,
+        ])),
     }
 }
 
@@ -248,26 +261,39 @@ mod tests {
     }
 
     #[test]
-    fn plugin_action_item_runs_real_command_array() {
-        let command = vec![
-            "herdr".to_string(),
-            "plugin".to_string(),
-            "pane".to_string(),
-            "open".to_string(),
-            "--plugin".to_string(),
-            "ramarivera.pretty-which".to_string(),
-        ];
+    fn plugin_action_item_dispatches_through_invoke() {
         let item = item_from_plugin_action(
             "ramarivera.pretty-which",
             "open",
             Some("Open pretty which"),
-            &command,
         );
         assert_eq!(item.subtitle, "ramarivera.pretty-which.open");
+        assert_eq!(item.title, "Open pretty which");
         assert!(matches!(
             item.dispatch,
-            Some(Dispatch::Cli(ref argv)) if argv == &command
+            Some(Dispatch::Cli(ref argv)) if argv == &[
+                "herdr", "plugin", "action", "invoke", "ramarivera.pretty-which.open",
+            ]
         ));
+    }
+
+    /// A manifest whose command is relative to the plugin root — the case that
+    /// silently failed when the argv was spawned directly.
+    #[test]
+    fn plugin_relative_command_is_not_run_directly() {
+        let item = item_from_plugin_action("herdr-jira", "open-jira", Some("Jira: open (split)"));
+        let Some(Dispatch::Cli(argv)) = item.dispatch else {
+            panic!("expected a CLI dispatch")
+        };
+        assert!(!argv.iter().any(|a| a.contains("scripts/")), "{argv:?}");
+        assert_eq!(argv.last().unwrap(), "herdr-jira.open-jira");
+    }
+
+    #[test]
+    fn already_qualified_action_id_is_not_double_prefixed() {
+        let item = item_from_plugin_action("acme.thing", "acme.thing.go", None);
+        assert_eq!(item.subtitle, "acme.thing.go");
+        assert_eq!(item.title, "acme.thing.go");
     }
 
     #[test]
