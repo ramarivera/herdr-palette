@@ -395,6 +395,8 @@ impl PaletteState {
         sort_flat_matches(&mut hits);
         self.matched = hits;
 
+        *self.list_state.offset_mut() = 0;
+
         let selectable_len = self.selectable_len();
         if selectable_len == 0 {
             self.selected = 0;
@@ -1291,6 +1293,63 @@ mod tests {
         s.recompute_matches();
         assert!(s.matched.len() <= 3);
         assert!(s.matched.iter().any(|m| m.item.title.contains("Split")));
+    }
+
+    #[test]
+    fn incremental_search_resets_scroll_offset() {
+        use ratatui::backend::TestBackend;
+
+        let mut items = Vec::new();
+        for i in 0..120 {
+            items.push(Item {
+                kind: ItemKind::Binding,
+                title: format!("Action {i}"),
+                subtitle: format!("Does thing {i}."),
+                keys: vec![format!("prefix+{}", (b'a' + (i % 26) as u8) as char)],
+                tree_path: vec![format!("Category{}", i / 10), format!("Sub{}", i / 5)],
+                binding: None,
+                dispatch: Some(Dispatch::Cli(vec!["herdr".into()])),
+            });
+        }
+        items.push(Item {
+            kind: ItemKind::PluginAction,
+            title: "Toggle sidebar".into(),
+            subtitle: "herdr-sidebar.open-sidebar".into(),
+            keys: vec![],
+            tree_path: vec!["Plugins".into(), "herdr-sidebar".into()],
+            binding: None,
+            dispatch: Some(Dispatch::Cli(vec!["bash".into()])),
+        });
+        items.push(Item {
+            kind: ItemKind::PluginAction,
+            title: "Redeploy sidebar panes".into(),
+            subtitle: "herdr-sidebar.redeploy".into(),
+            keys: vec![],
+            tree_path: vec!["Plugins".into(), "herdr-sidebar".into()],
+            binding: None,
+            dispatch: Some(Dispatch::Cli(vec!["bash".into()])),
+        });
+
+        let p = sample_palette();
+        let mut state = PaletteState::new(items, "Palette".into(), "", &sample_cwd());
+        state.navigation_view = NavigationViewMode::Tree;
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut state, p)).unwrap();
+
+        for ch in "sidebar".chars() {
+            state.query.push(ch);
+            state.recompute_matches();
+            terminal.draw(|f| draw(f, &mut state, p)).unwrap();
+        }
+
+        let buffer = terminal.backend().buffer().clone();
+        let rendered = render_buffer(&buffer, 100, 30);
+        assert!(
+            rendered.contains("Toggle sidebar"),
+            "stale scroll offset hid items above the selected row"
+        );
     }
 
     #[test]
