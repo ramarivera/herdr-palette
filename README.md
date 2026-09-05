@@ -166,9 +166,12 @@ command = [
 Bind it to a chord in your Herdr config:
 
 ```toml
-[keys]
 # e.g. open the palette with prefix+space
-workspace_picker = "prefix+space"
+[[keys.command]]
+key = "prefix+space"
+type = "plugin_action"
+command = "ramarivera.palette.open"
+description = "Open the palette"
 ```
 
 ## Architecture
