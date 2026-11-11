@@ -101,7 +101,6 @@ struct RawPluginAction {
     plugin_id: String,
     action_id: String,
     title: Option<String>,
-    command: Vec<String>,
 }
 
 fn plugin_actions() -> Result<Vec<Item>> {
@@ -118,9 +117,7 @@ fn plugin_actions() -> Result<Vec<Item>> {
     let raws = parse_plugin_actions(&text).context("could not parse plugin action list")?;
     Ok(raws
         .into_iter()
-        .map(|r| {
-            item_from_plugin_action(&r.plugin_id, &r.action_id, r.title.as_deref(), &r.command)
-        })
+        .map(|r| item_from_plugin_action(&r.plugin_id, &r.action_id, r.title.as_deref()))
         .collect())
 }
 
@@ -157,12 +154,13 @@ fn parse_plugin_actions(text: &str) -> Result<Vec<RawPluginAction>> {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        // `command` itself is not stored — herdr runs it. An empty one still
+        // means the row is not runnable, so it stays a validity check.
         if !plugin_id.is_empty() && !action_id.is_empty() && !command.is_empty() {
             out.push(RawPluginAction {
                 plugin_id,
                 action_id,
                 title,
-                command,
             });
         }
     }
@@ -227,7 +225,7 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].plugin_id, "ramarivera.pretty-which");
         assert_eq!(parsed[0].action_id, "open");
-        assert_eq!(parsed[0].command[0], "herdr");
+        assert_eq!(parsed[0].title.as_deref(), Some("Open pretty which"));
         assert_eq!(parsed[1].plugin_id, "roxasroot.pretty-help");
     }
 
