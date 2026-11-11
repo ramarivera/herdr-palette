@@ -262,11 +262,8 @@ mod tests {
 
     #[test]
     fn plugin_action_item_dispatches_through_invoke() {
-        let item = item_from_plugin_action(
-            "ramarivera.pretty-which",
-            "open",
-            Some("Open pretty which"),
-        );
+        let item =
+            item_from_plugin_action("ramarivera.pretty-which", "open", Some("Open pretty which"));
         assert_eq!(item.subtitle, "ramarivera.pretty-which.open");
         assert_eq!(item.title, "Open pretty which");
         assert!(matches!(

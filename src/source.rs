@@ -117,9 +117,7 @@ fn plugin_actions() -> Result<Vec<Item>> {
     let raws = parse_plugin_actions(&text).context("could not parse plugin action list")?;
     Ok(raws
         .into_iter()
-        .map(|r| {
-            item_from_plugin_action(&r.plugin_id, &r.action_id, r.title.as_deref())
-        })
+        .map(|r| item_from_plugin_action(&r.plugin_id, &r.action_id, r.title.as_deref()))
         .collect())
 }
 

@@ -46,8 +46,9 @@ mode sorts by fuzzy score, dispatchability, source priority, then title.
 
 ### Dispatch tiers
 
-- **Tier A — direct CLI:** safe create/focus/split/zoom actions and plugin
-  actions with fully resolved `command[]` arrays.
+- **Tier A:** safe create/focus/split/zoom actions use the CLI directly. Plugin
+  actions use `herdr plugin action invoke`, so Herdr supplies the target
+  plugin's working directory and environment.
 - **Tier B — list + resolve + focus:** previous/next workspace, tab, and agent
   cycles. The palette reads the live ordered list, finds the focused row, then
   focuses the neighbor.
@@ -166,9 +167,12 @@ command = [
 Bind it to a chord in your Herdr config:
 
 ```toml
-[keys]
 # e.g. open the palette with prefix+space
-workspace_picker = "prefix+space"
+[[keys.command]]
+key = "prefix+space"
+type = "plugin_action"
+command = "ramarivera.palette.open"
+description = "Open the palette"
 ```
 
 ## Architecture
